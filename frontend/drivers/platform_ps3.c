@@ -50,10 +50,13 @@
 #include "../../file_path_special.h"
 #include "../../paths.h"
 #include "../../verbosity.h"
+#include "../../retroarch.h"
 
 #if !defined(IS_SALAMANDER) && defined(HAVE_NETWORKING)
 #include "../../network/netplay/netplay.h"
 #endif
+
+#include "../../menu/menu_entries.h"
 
 #ifdef __PSL1GHT__
 #define EMULATOR_CONTENT_DIR "SSNE10001"

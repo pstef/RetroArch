@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <retro_inline.h>
+#include <defines/ps3_defines.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"

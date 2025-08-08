@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <malloc.h> /* memalign */
 
 #ifdef __PSL1GHT__
 #include <io/kb.h>
@@ -36,6 +37,8 @@
 #include <retro_inline.h>
 
 #include "../input_driver.h"
+#include "../input_keymaps.h"
+#include "../../gfx/video_driver.h"
 
 #ifdef HAVE_MOUSE
 #ifndef MAX_MICE

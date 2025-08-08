@@ -23,6 +23,8 @@
 #ifndef _LIBRETRO_SDK_NET_COMPAT_H
 #define _LIBRETRO_SDK_NET_COMPAT_H
 
+#include <defines/ps3_defines.h>
+
 #include <stdint.h>
 #include <boolean.h>
 #include <retro_inline.h>

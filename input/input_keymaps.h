@@ -261,6 +261,9 @@ extern const struct rarch_key_map rarch_key_map_vita[];
 #ifdef ORBIS
 extern const struct rarch_key_map rarch_key_map_ps4[];
 #endif
+#ifdef __PSL1GHT__
+extern const struct rarch_key_map rarch_key_map_ps3[];
+#endif
 
 RETRO_END_DECLS
 
