@@ -23,13 +23,17 @@ jobs:
   samples-tasks:
     name: Build and run samples/tasks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # One job runs every samples/tasks oracle, most of them three times
+    # (plain, ASan + UBSan, TSan): 53 steps. Ten minutes was the budget
+    # when there were fewer; it now runs out partway through and the
+    # job is cancelled with nothing failing.
+    timeout-minutes: 30
 
     steps:
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          pkgs="build-essential zlib1g-dev"
+          pkgs="build-essential zlib1g-dev gcc-mingw-w64-x86-64 wine64"
           if dpkg -s $pkgs >/dev/null 2>&1; then
             echo "All packages already present on runner image; skipping apt."
             exit 0
@@ -49,13 +53,34 @@ jobs:
               $pkgs && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -64,8 +89,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -79,7 +107,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build database_task
@@ -87,7 +115,7 @@ jobs:
         working-directory: samples/tasks/database
         run: |
           set -eu
-          make clean all
+          make clean && make -j$(nproc) all
           test -x database_task
 
       - name: Smoke-test database_task argv parsing
@@ -124,7 +152,7 @@ jobs:
         working-directory: samples/tasks/decompress
         run: |
           set -eu
-          make clean all
+          make clean && make -j$(nproc) all
           test -x archive_name_safety_test
           # Regression test for the Zip Slip / absolute-path defences
           # in tasks/task_decompress.c::archive_name_is_safe().  The
@@ -147,7 +175,7 @@ jobs:
           # The same lanes against the built-in inflater, which builds
           # without HAVE_ZLIB use and which rebinds its output window
           # differently from zlib.
-          make all BUILTIN_DEFLATE=1
+          make -j$(nproc) all BUILTIN_DEFLATE=1
           timeout 60 ./decompress_window_test
           make clean BUILTIN_DEFLATE=1 >/dev/null
           make all SANITIZER=address,undefined -j$(nproc)
@@ -170,7 +198,7 @@ jobs:
           # cloud-sync directory via ".." or an absolute component, or
           # crash the fetch with a key that has no '/'.  The test
           # #includes the real predicate (tasks/task_cloudsync_path.c).
-          make clean all
+          make clean && make -j$(nproc) all
           test -x cloudsync_path_safety_test
           timeout 60 ./cloudsync_path_safety_test
           echo "[pass] cloudsync_path_safety_test"
@@ -186,15 +214,105 @@ jobs:
           # entry must be there once, with its own hash; TSan is what
           # sees the threads share anything without ordering, ASan an
           # entry freed twice or not at all.
-          make clean cloudsync_manifest_adds_test
+          make clean && make -j$(nproc) cloudsync_manifest_adds_test
           timeout 60 ./cloudsync_manifest_adds_test
-          make clean cloudsync_manifest_adds_test SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) cloudsync_manifest_adds_test SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             timeout 120 ./cloudsync_manifest_adds_test
-          make clean cloudsync_manifest_adds_test SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) cloudsync_manifest_adds_test SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 120 ./cloudsync_manifest_adds_test
           make clean >/dev/null
           echo "[pass] cloudsync_manifest_adds_test"
+
+      - name: Build and run cloudsync_pacing_test (ASan + UBSan + LSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/cloudsync
+        run: |
+          set -eu
+          # tasks/task_cloudsync.c's diff runs as many steps as the shared
+          # per-frame I/O window grants and hashes the current file 256 KiB
+          # at a time, carrying a large file over to the next run instead
+          # of reading it whole in one (the frame loop, with Threaded Tasks
+          # off). Against a stub window: a 9 MiB file spread over runs with
+          # its MD5 unchanged, small files several to a run, the floor
+          # alone finishing the diff, and a 9 MiB download reported from
+          # another thread hashed by the task over many runs instead of
+          # by the callback. The directory walk listing the local files
+          # runs within the grant too and lists what dir_list_new() did,
+          # an unreadable root still stopping the sync. Pushed on the real
+          # task queue and run to its
+          # end, the sync must release everything (LeakSanitizer).
+          make clean && make -j$(nproc) cloudsync_pacing_test
+          timeout 120 ./cloudsync_pacing_test
+          make clean SANITIZER=address,undefined && make -j$(nproc) cloudsync_pacing_test SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+            timeout 300 ./cloudsync_pacing_test
+          make clean SANITIZER=thread && make -j$(nproc) cloudsync_pacing_test SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 timeout 300 ./cloudsync_pacing_test
+          make clean >/dev/null
+          echo "[pass] cloudsync_pacing_test"
+
+      - name: Build and run the cloudsync hand-over tests, locked path (ASan + UBSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/cloudsync
+        run: |
+          set -eu
+          # Completion callbacks hand manifest entries and downloads to
+          # the task thread on lock-free lists where the atomics backend
+          # has pointer operations, and under tcs_manifest_lock where it
+          # does not. Every backend this runner has, has them, so
+          # FORCE_LOCK=1 builds tasks/task_cloudsync.c with
+          # TASK_CLOUDSYNC_FORCE_LOCK: the locked path on the host's own
+          # backend, where TSan sees an append or hand-over the lock
+          # does not cover. Same tests, same checks, other path.
+          for t in cloudsync_manifest_adds_test cloudsync_pacing_test cloudsync_commit_test; do
+             make clean $t FORCE_LOCK=1
+             timeout 120 ./$t
+             make clean $t FORCE_LOCK=1 SANITIZER=address,undefined
+             ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+               timeout 300 ./$t
+             make clean $t FORCE_LOCK=1 SANITIZER=thread
+             TSAN_OPTIONS=halt_on_error=1 timeout 300 ./$t
+          done
+          make clean >/dev/null
+          echo "[pass] cloudsync hand-over, locked path"
+
+      - name: Check cloud-sync commits on the content thread
+        shell: bash
+        working-directory: samples/tasks/cloudsync
+        run: |
+          set -eu
+          make clean SANITIZER=address,undefined && make -j$(nproc) cloudsync_commit_test SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./cloudsync_commit_test
+          make clean SANITIZER=thread && make -j$(nproc) cloudsync_commit_test SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 ./cloudsync_commit_test
+          make clean CC=x86_64-w64-mingw32-gcc LDFLAGS=-static && make -j$(nproc) cloudsync_commit_test CC=x86_64-w64-mingw32-gcc LDFLAGS=-static
+          WINEDEBUG=-all wine ./cloudsync_commit_test.exe
+          make clean
+
+      - name: Build and run cloudsync_async_test (ASan + UBSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/cloudsync
+        run: |
+          set -eu
+          # network/cloud_sync_driver.c runs a blocking driver's calls
+          # (SMB, NFS) on a worker and hands results back through
+          # cloud_sync_poll(), so a slow server never stalls the thread
+          # driving the sync - the frame loop with Threaded Tasks off.
+          # Against a driver that blocks until released: every call
+          # returns at once, handlers run on the polling thread in call
+          # order, one driver call at a time, names copied, refused calls
+          # failing, and a new worker for the sync after one that ended
+          # or failed to begin. On the old direct calls the test hangs.
+          make clean && make -j$(nproc) cloudsync_async_test
+          timeout 60 ./cloudsync_async_test
+          make clean SANITIZER=address,undefined && make -j$(nproc) cloudsync_async_test SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+            timeout 120 ./cloudsync_async_test
+          make clean SANITIZER=thread && make -j$(nproc) cloudsync_async_test SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 timeout 120 ./cloudsync_async_test
+          make clean >/dev/null
+          echo "[pass] cloudsync_async_test"
 
       - name: Build and run natt_desc_parse_test
         shell: bash
@@ -207,7 +325,7 @@ jobs:
           # leaf or empty root node and never reached a nested
           # <service>.  The test #includes the real parser and feeds it
           # hand-built hostile trees.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x natt_desc_parse_test
           timeout 60 ./natt_desc_parse_test
           echo "[pass] natt_desc_parse_test"
@@ -226,7 +344,7 @@ jobs:
           # bounds level, not just the truth-table level.  If
           # task_http.c amends the GET-dispatch predicate, the
           # copy in http_method_match_test.c must follow.
-          make clean all SANITIZER=address
+          make clean SANITIZER=address && make -j$(nproc) all SANITIZER=address
           test -x http_method_match_test
           timeout 60 ./http_method_match_test
           echo "[pass] http_method_match_test"
@@ -252,7 +370,7 @@ jobs:
           # If video_shader_parse.c amends the post-replacement
           # arithmetic, the verbatim copy in
           # video_shader_wildcard_test.c must follow.
-          make clean all SANITIZER=address
+          make clean SANITIZER=address && make -j$(nproc) all SANITIZER=address
           test -x video_shader_wildcard_test
           timeout 60 ./video_shader_wildcard_test
           echo "[pass] video_shader_wildcard_test"
@@ -275,7 +393,7 @@ jobs:
           # in the list walk is caught at the bounds level.  If save.c
           # amends the predicate, the verbatim copy in
           # cloudsync_savefile_owner_test.c must follow.
-          make clean all SANITIZER=address
+          make clean SANITIZER=address && make -j$(nproc) all SANITIZER=address
           test -x cloudsync_savefile_owner_test
           timeout 60 ./cloudsync_savefile_owner_test
           echo "[pass] cloudsync_savefile_owner_test"
@@ -299,7 +417,7 @@ jobs:
           # bounds level.  If configuration.c or input_driver.c
           # amends the relevant predicates, the verbatim copies
           # in input_remap_bounds_test.c must follow.
-          make clean all SANITIZER=address
+          make clean SANITIZER=address && make -j$(nproc) all SANITIZER=address
           test -x input_remap_bounds_test
           timeout 60 ./input_remap_bounds_test
           echo "[pass] input_remap_bounds_test"
@@ -321,7 +439,7 @@ jobs:
           # menu_setting.c, configuration.c or input_driver.c change
           # those functions, the copies in turbo_bind_bounds_test.c
           # must follow.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x turbo_bind_bounds_test
           UBSAN_OPTIONS=halt_on_error=1 timeout 60 ./turbo_bind_bounds_test
           echo "[pass] turbo_bind_bounds_test"
@@ -342,7 +460,7 @@ jobs:
           # at the bounds level.  If input/bsv/bsvmovie.c amends
           # the predicate, the verbatim copy in
           # bsv_replay_bounds_test.c must follow.
-          make clean all SANITIZER=address
+          make clean SANITIZER=address && make -j$(nproc) all SANITIZER=address
           test -x bsv_replay_bounds_test
           timeout 60 ./bsv_replay_bounds_test
           echo "[pass] bsv_replay_bounds_test"
@@ -360,7 +478,7 @@ jobs:
           # leak is reported.  If input/bsv/bsvmovie.c changes that
           # function, the verbatim copy in
           # bsv_checkpoint_bounds_test.c must follow.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x bsv_checkpoint_bounds_test
           UBSAN_OPTIONS=halt_on_error=1 timeout 60 ./bsv_checkpoint_bounds_test
           echo "[pass] bsv_checkpoint_bounds_test"
@@ -382,14 +500,22 @@ jobs:
           # recording before its first frame leaving the session stuck
           # "recording".  If runloop.c changes its per-frame replay
           # protocol, frame() in the test must follow.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x bsv_replay_init_test
           timeout 120 ./bsv_replay_init_test
           echo "[pass] bsv_replay_init_test"
-          make clean all SANITIZER=address,undefined
-          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
+          # allocator_may_return_null: the test feeds a checkpoint too big
+          # to allocate and expects malloc to return NULL.
+          ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 120 ./bsv_replay_init_test
           echo "[pass] bsv_replay_init_test (ASan + UBSan)"
+          # STATESTREAM=1: the deduplicating checkpoint encoding desktop
+          # builds use, and the lanes that exercise it.
+          make clean STATESTREAM=1 SANITIZER=address,undefined && make -j$(nproc) all STATESTREAM=1 SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1 UBSAN_OPTIONS=print_stacktrace=1 \
+             timeout 120 ./bsv_replay_init_test
+          echo "[pass] bsv_replay_init_test (STATESTREAM, ASan + UBSan)"
 
       - name: Build and run bsv_statestream_test (plain, ASan + UBSan)
         shell: bash
@@ -409,18 +535,18 @@ jobs:
           # (malloc, calloc and realloc are wrapped at link time) and
           # need every one to fail cleanly, with no leak.  Each lane
           # takes its name as an argument to run alone.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x bsv_statestream_test
           timeout 120 ./bsv_statestream_test
           echo "[pass] bsv_statestream_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
              timeout 120 ./bsv_statestream_test
           echo "[pass] bsv_statestream_test (ASan + UBSan)"
           # Again with every object hashing alike (constant_hash.h),
           # so inserts share buckets and the oom lanes also fail the
           # buckets' own growth.
-          make clean all SANITIZER=address,undefined \
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined \
              EXTRA_CFLAGS='-include $(CURDIR)/constant_hash.h'
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
              timeout 120 ./bsv_statestream_test
@@ -444,7 +570,7 @@ jobs:
           # at the bounds level.  If task_patch.c amends the
           # action-loop predicates, the verbatim copy in
           # bps_patch_bounds_test.c must follow.
-          make clean all SANITIZER=address
+          make clean SANITIZER=address && make -j$(nproc) all SANITIZER=address
           test -x bps_patch_bounds_test
           timeout 60 ./bps_patch_bounds_test
           echo "[pass] bps_patch_bounds_test"
@@ -471,7 +597,7 @@ jobs:
           # inside a patch command.  A truncated feed must be refused
           # rather than answered with a target built from a partial
           # source.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x patch_stream_test
           timeout 900 ./patch_stream_test
           echo "[pass] patch_stream_test"
@@ -529,7 +655,7 @@ jobs:
           # looking for contention on a shared handle - it checks
           # that the spine keeps no hidden static state, which a
           # sanitizer build can answer and inspection cannot.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x task_file_transfer_test
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
@@ -537,12 +663,28 @@ jobs:
           ASAN_OPTIONS=detect_leaks=1 timeout 600 \
              ./task_file_transfer_test conc
           echo "[pass] task_file_transfer_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./task_file_transfer_test
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./task_file_transfer_test conc
           echo "[pass] task_file_transfer_test (TSan)"
+
+      - name: Build and run pl_thumbnail_wait_test (ASan + UBSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/pl_thumbnail
+        run: |
+          set -eu
+          # The thumbnail tasks park while a transfer runs, and a
+          # cancelled one keeps its handle until the transfer's
+          # callback has written into it.
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+             timeout 120 ./pl_thumbnail_wait_test
+          echo "[pass] pl_thumbnail_wait_test (ASan + UBSan)"
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 timeout 120 ./pl_thumbnail_wait_test
+          echo "[pass] pl_thumbnail_wait_test (TSan)"
 
       - name: Build and run core_crc_slice_test (ASan + UBSan, TSan)
         shell: bash
@@ -569,16 +711,16 @@ jobs:
           # including sizes that do not divide the file evenly and a
           # final slice of one byte.  Both are asserted against
           # intfstream_get_crc() as the oracle.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x core_crc_slice_test
           timeout 600 ./core_crc_slice_test
           echo "[pass] core_crc_slice_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./core_crc_slice_test
           echo "[pass] core_crc_slice_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 ./core_crc_slice_test
           make clean
           echo "[pass] core_crc_slice_test (TSan)"
@@ -606,16 +748,16 @@ jobs:
           # the real push end to end against a loopback
           # .index-extended server, both values of refresh_menu, and
           # asserts the flags clear and the refresh gate comes back.
-          make -f Makefile.refresh_flags clean all
+          make -f Makefile.refresh_flags clean && make -f Makefile.refresh_flags -j$(nproc) all
           test -x get_list_refresh_flags_test
           timeout 600 ./get_list_refresh_flags_test
           echo "[pass] get_list_refresh_flags_test"
-          make -f Makefile.refresh_flags clean all SANITIZER=address,undefined
+          make -f Makefile.refresh_flags clean SANITIZER=address,undefined && make -f Makefile.refresh_flags -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./get_list_refresh_flags_test
           echo "[pass] get_list_refresh_flags_test (ASan)"
-          make -f Makefile.refresh_flags clean all SANITIZER=thread
+          make -f Makefile.refresh_flags clean SANITIZER=thread && make -f Makefile.refresh_flags -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./get_list_refresh_flags_test
           make -f Makefile.refresh_flags clean
@@ -652,16 +794,16 @@ jobs:
           # boundary: a repeat run hashes no unchanged core, a touched
           # core is hashed again, a changed one is hashed and
           # downloaded, and a corrupt cache falls back to hashing all.
-          make -f Makefile.update_installed clean all
+          make -f Makefile.update_installed clean && make -f Makefile.update_installed -j$(nproc) all
           test -x update_installed_scan_test
           timeout 600 ./update_installed_scan_test
           echo "[pass] update_installed_scan_test"
-          make -f Makefile.update_installed clean all SANITIZER=address,undefined
+          make -f Makefile.update_installed clean SANITIZER=address,undefined && make -f Makefile.update_installed -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./update_installed_scan_test
           echo "[pass] update_installed_scan_test (ASan)"
-          make -f Makefile.update_installed clean all SANITIZER=thread
+          make -f Makefile.update_installed clean SANITIZER=thread && make -f Makefile.update_installed -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./update_installed_scan_test
           make -f Makefile.update_installed clean
@@ -681,15 +823,15 @@ jobs:
           # the setting on the backup is compressed as before; a new
           # core that cannot be moved into place leaves the installed
           # one as it was.
-          make -f Makefile.staged_install clean all
+          make -f Makefile.staged_install clean && make -f Makefile.staged_install -j$(nproc) all
           timeout 600 ./staged_install_test
           echo "[pass] staged_install_test"
-          make -f Makefile.staged_install clean all SANITIZER=address,undefined
+          make -f Makefile.staged_install clean SANITIZER=address,undefined && make -f Makefile.staged_install -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./staged_install_test
           echo "[pass] staged_install_test (ASan)"
-          make -f Makefile.staged_install clean all SANITIZER=thread
+          make -f Makefile.staged_install clean SANITIZER=thread && make -f Makefile.staged_install -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./staged_install_test
           make -f Makefile.staged_install clean
@@ -710,16 +852,16 @@ jobs:
           # heap-use-after-free under ASan); the other cancels the
           # download while the backup runs, so the backup's callback
           # fires after the download's handle is gone.
-          make -f Makefile.download_backup clean all
+          make -f Makefile.download_backup clean && make -f Makefile.download_backup -j$(nproc) all
           test -x download_backup_wait_test
           timeout 600 ./download_backup_wait_test
           echo "[pass] download_backup_wait_test"
-          make -f Makefile.download_backup clean all SANITIZER=address,undefined
+          make -f Makefile.download_backup clean SANITIZER=address,undefined && make -f Makefile.download_backup -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./download_backup_wait_test
           echo "[pass] download_backup_wait_test (ASan)"
-          make -f Makefile.download_backup clean all SANITIZER=thread
+          make -f Makefile.download_backup clean SANITIZER=thread && make -f Makefile.download_backup -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./download_backup_wait_test
           make -f Makefile.download_backup clean
@@ -745,16 +887,16 @@ jobs:
           # with the core missing: the next install must put it back
           # if it fails and drop it if it succeeds or play feature
           # delivery already installed the core.
-          make -f Makefile.pfd_switch clean all
+          make -f Makefile.pfd_switch clean && make -f Makefile.pfd_switch -j$(nproc) all
           test -x pfd_switch_cores_test
           timeout 600 ./pfd_switch_cores_test
           echo "[pass] pfd_switch_cores_test"
-          make -f Makefile.pfd_switch clean all SANITIZER=address,undefined
+          make -f Makefile.pfd_switch clean SANITIZER=address,undefined && make -f Makefile.pfd_switch -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./pfd_switch_cores_test
           echo "[pass] pfd_switch_cores_test (ASan)"
-          make -f Makefile.pfd_switch clean all SANITIZER=thread
+          make -f Makefile.pfd_switch clean SANITIZER=thread && make -f Makefile.pfd_switch -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./pfd_switch_cores_test
           make -f Makefile.pfd_switch clean
@@ -820,16 +962,16 @@ jobs:
           # renames over it only once complete.  The symlink lane
           # requires a core reached through a link to keep the link
           # and have its target replaced.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x core_backup_io_test
           timeout 600 ./core_backup_io_test
           echo "[pass] core_backup_io_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./core_backup_io_test
           echo "[pass] core_backup_io_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 ./core_backup_io_test
           make clean
           echo "[pass] core_backup_io_test (TSan)"
@@ -864,11 +1006,11 @@ jobs:
           # It also checks the decode itself end to end - dimensions
           # and a pixel spot-check on every delivered image - so the
           # budget rework cannot silently break what it budgets.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x image_decode_slice_test
           timeout 600 ./image_decode_slice_test
           echo "[pass] image_decode_slice_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./image_decode_slice_test
@@ -941,16 +1083,16 @@ jobs:
           # silently covered only a prefix fails correctness, and
           # three extra cancel points land inside the budgeted read
           # and parse of the large document.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x scan_begin_budget_test
           timeout 600 ./scan_begin_budget_test
           echo "[pass] scan_begin_budget_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 900 \
              ./scan_begin_budget_test sanitize
           echo "[pass] scan_begin_budget_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 900 \
              ./scan_begin_budget_test sanitize
           make clean
@@ -987,7 +1129,7 @@ jobs:
           # The first and third are bounds and lifetime properties that
           # a plain build walks straight past, so this lane is sanitized
           # only and LeakSanitizer decides the teardown as well.
-          make clean database_scan_test SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) database_scan_test SANITIZER=address,undefined
           test -x database_scan_test
           scan_root="$(mktemp -d)"
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
@@ -1129,10 +1271,10 @@ jobs:
           # the window, and ends. Pins that begin and end run once each
           # a window apart, that another task runs during the window,
           # and that the callback fires.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
              timeout 60 ./bluetooth_scan_test
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 60 ./bluetooth_scan_test
           echo "[pass] bluetooth_scan_test"
 
@@ -1448,16 +1590,16 @@ jobs:
           # teardown; the threaded lane hands the walk to a worker
           # and is the TSan target for the handler-to-main-callback
           # hand-off.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x dirwalk_budget_test
           timeout 600 ./dirwalk_budget_test
           echo "[pass] dirwalk_budget_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 900 \
              ./dirwalk_budget_test sanitize
           echo "[pass] dirwalk_budget_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 900 \
              ./dirwalk_budget_test sanitize
           make clean
@@ -1565,24 +1707,38 @@ jobs:
           # configuration that cannot occur.  What it asks TSan is
           # whether a loop that newly carries a deadline across
           # iterations kept any of it shared.
-          make clean all
+          make clean && make -j$(nproc) all
           test -x save_state_io_test
           timeout 300 ./save_state_io_test
           timeout 300 ./save_state_io_test conc
           echo "[pass] save_state_io_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 300 \
              ./save_state_io_test
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 300 ./save_state_io_test conc
           echo "[pass] save_state_io_test (ASan)"
-          make clean all SANITIZER=thread
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 \
              ./save_state_io_test
           TSAN_OPTIONS=halt_on_error=1 timeout 300 \
              ./save_state_io_test conc
           echo "[pass] save_state_io_test (TSan)"
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
 
   samples-tasks-http:
     name: Build and run samples/tasks/http
@@ -1613,13 +1769,34 @@ jobs:
               $pkgs && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -1628,8 +1805,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -1643,7 +1823,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: C89 syntax check for the HTTP task translation units
@@ -1723,13 +1903,29 @@ jobs:
           # fixed-buffer shape as a second oracle so a revert is
           # caught.  Both NAME_MAX_LENGTH values are covered: 256 on
           # most targets, 128 on the small-path platforms.
-          make -f Makefile.dedup clean all SANITIZER=address
+          make -f Makefile.dedup clean SANITIZER=address && make -f Makefile.dedup -j$(nproc) all SANITIZER=address
           timeout 60 ./http_url_dedup_test
-          make -f Makefile.dedup clean all SANITIZER=address \
+          make -f Makefile.dedup clean SANITIZER=address && make -f Makefile.dedup -j$(nproc) all SANITIZER=address \
              CFLAGS_EXTRA=-DNAME_MAX_LENGTH=128
           timeout 60 ./http_url_dedup_test
           make -f Makefile.dedup clean
           echo "[pass] http_url_dedup_test"
+
+      - name: Build and run http_emscripten_park_test (ASan + UBSan, TSan)
+        shell: bash
+        working-directory: samples/tasks/http_emscripten
+        run: |
+          set -eu
+          # tasks/task_http_emscripten.c built natively against stand-in
+          # Emscripten headers: the task parks while its fetch is in
+          # flight and the fetch's settle wakes it.
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+             timeout 60 ./http_emscripten_park_test
+          echo "[pass] http_emscripten_park_test (ASan + UBSan)"
+          make clean SANITIZER=thread && make -j$(nproc) all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 timeout 60 ./http_emscripten_park_test
+          echo "[pass] http_emscripten_park_test (TSan)"
 
       - name: Build and run http_emscripten_headers_test (ASan + UBSan)
         shell: bash
@@ -1755,9 +1951,9 @@ jobs:
           # auth failure rather than a crash - silent, and awkward to
           # trace back - so the degenerate cases are worth pinning.
           # Pure logic, so it runs natively without emcc.
-          make -f Makefile.emsc_headers clean all SANITIZER=address
+          make -f Makefile.emsc_headers clean SANITIZER=address && make -f Makefile.emsc_headers -j$(nproc) all SANITIZER=address
           timeout 60 ./http_emscripten_headers_test
-          make -f Makefile.emsc_headers clean all SANITIZER=undefined
+          make -f Makefile.emsc_headers clean SANITIZER=undefined && make -f Makefile.emsc_headers -j$(nproc) all SANITIZER=undefined
           UBSAN_OPTIONS=print_stacktrace=1 timeout 60 \
              ./http_emscripten_headers_test
           make -f Makefile.emsc_headers clean
@@ -1809,11 +2005,11 @@ jobs:
           # To confirm this test still bites, move the teardown in
           # task_http.c from task_http_transfer_cleanup() back into
           # task_http_transfer_handler() and rerun under ASan.
-          make -f Makefile.task_lifetime clean all SANITIZER=address
+          make -f Makefile.task_lifetime clean SANITIZER=address && make -f Makefile.task_lifetime -j$(nproc) all SANITIZER=address
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              timeout 300 ./http_task_lifetime_test
           echo "[pass] http_task_lifetime_test (ASan)"
-          make -f Makefile.task_lifetime clean all SANITIZER=thread
+          make -f Makefile.task_lifetime clean SANITIZER=thread && make -f Makefile.task_lifetime -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 \
              ./http_task_lifetime_test
           make -f Makefile.task_lifetime clean
@@ -1854,12 +2050,12 @@ jobs:
           # what makes a leak in the DNS cache and connection pool
           # visible to LeakSan at all, since both lists hang off
           # file-scope globals and otherwise count as still reachable.
-          make -f Makefile.stress clean all SANITIZER=address,undefined
+          make -f Makefile.stress clean SANITIZER=address,undefined && make -f Makefile.stress -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 600 \
              ./http_transfer_stress_test
           echo "[pass] http_transfer_stress_test (ASan)"
-          make -f Makefile.stress clean all SANITIZER=thread
+          make -f Makefile.stress clean SANITIZER=thread && make -f Makefile.stress -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 600 \
              ./http_transfer_stress_test
           make -f Makefile.stress clean
@@ -1906,12 +2102,12 @@ jobs:
           #
           # To confirm this still bites, drop the `status < 0` guard
           # from net_http_data() and rerun.
-          make -f Makefile.transport_fail clean all SANITIZER=address,undefined
+          make -f Makefile.transport_fail clean SANITIZER=address,undefined && make -f Makefile.transport_fail -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 300 \
              ./http_transport_failure_test
           echo "[pass] http_transport_failure_test (ASan)"
-          make -f Makefile.transport_fail clean all SANITIZER=thread
+          make -f Makefile.transport_fail clean SANITIZER=thread && make -f Makefile.transport_fail -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 \
              ./http_transport_failure_test
           make -f Makefile.transport_fail clean
@@ -1931,12 +2127,12 @@ jobs:
           # connection that keeps dropping (more than three resumes) fail
           # and remove the partial file. Every interrupted download used
           # to fail outright.
-          make -f Makefile.resume clean all SANITIZER=address,undefined
+          make -f Makefile.resume clean SANITIZER=address,undefined && make -f Makefile.resume -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 timeout 300 \
              ./http_resume_test
           echo "[pass] http_resume_test (ASan)"
-          make -f Makefile.resume clean all SANITIZER=thread
+          make -f Makefile.resume clean SANITIZER=thread && make -f Makefile.resume -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 ./http_resume_test
           make -f Makefile.resume clean
           echo "[pass] http_resume_test (TSan)"
@@ -2021,12 +2217,26 @@ jobs:
           # Because the failure mode is a hang rather than a wrong
           # answer, the sweep runs behind a watchdog: on timeout the
           # test reports and exits non-zero instead of blocking CI.
-          make -f Makefile.dns_evict clean all SANITIZER=address
+          make -f Makefile.dns_evict clean SANITIZER=address && make -f Makefile.dns_evict -j$(nproc) all SANITIZER=address
           ASAN_OPTIONS=detect_leaks=1 timeout 300 \
              ./http_dns_evict_deadlock_test
           echo "[pass] http_dns_evict_deadlock_test (ASan)"
-          make -f Makefile.dns_evict clean all SANITIZER=thread
+          make -f Makefile.dns_evict clean SANITIZER=thread && make -f Makefile.dns_evict -j$(nproc) all SANITIZER=thread
           TSAN_OPTIONS=halt_on_error=1 timeout 300 \
              ./http_dns_evict_deadlock_test
           make -f Makefile.dns_evict clean
           echo "[pass] http_dns_evict_deadlock_test (TSan)"
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}

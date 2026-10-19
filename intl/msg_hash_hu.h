@@ -600,7 +600,7 @@ static const struct
    char s_22600fe7[19];
    char s_12b8e195[15];
    char s_dd6afca3[21];
-   char s_4bcbcc14[32];
+   char s_4bcbcc14[36];
    char s_e97bb565[36];
    char s_da7a38eb[27];
 #ifdef _3DS
@@ -808,6 +808,7 @@ static const struct
    char s_56e1b336[13];
    char s_313d15c0[14];
    char s_e9f0dd82[45];
+   char s_0bd714f7[8];
    char s_72765a06[25];
    char s_72765a07[25];
    char s_72765a08[25];
@@ -1144,7 +1145,6 @@ static const struct
 #endif
 #endif
    char s_a6e5d0ee[26];
-   char s_f228c6c5[19];
    char s_11926382[26];
    char s_645ae416[33];
    char s_df92f5b5[49];
@@ -1754,7 +1754,6 @@ static const struct
    char s_ccfe26d1[16];
    char s_728ca1d3[3];
    char s_5f612db6[18];
-   char s_9f29f708[24];
    char s_a9145c83[22];
    char s_ec1c0efd[7];
    char s_b449bf9e[8];
@@ -2194,6 +2193,10 @@ static const struct
    char s_4b582a0c[55];
    char s_61213f1d[18];
    char s_95e4b29f[79];
+   char s_60258de0[7];
+   char s_caf61308[12];
+   char s_34b2592a[3];
+   char s_c7a27b20[12];
    char s_317b17ed[8];
    char s_94c8d15f[8];
    char s_de16b5d2[8];
@@ -2236,6 +2239,8 @@ static const struct
    char s_69b801ef[12];
    char s_a40653a7[26];
    char s_52e3d6ea[40];
+   char s_2c868ae4[12];
+   char s_9c535394[13];
    char s_580e244f[5];
    char s_a9c8430e[14];
    char s_f5911f43[33];
@@ -2274,7 +2279,6 @@ static const struct
    char s_c017f975[12];
    char s_730df420[17];
    char s_bcddf275[8];
-   char s_258060bf[28];
    char s_f90edcc2[65];
    char s_ad14307a[24];
 #if defined(RARCH_MOBILE)
@@ -2740,7 +2744,6 @@ static const struct
    char s_74d87c7a[34];
    char s_12adb1e7[31];
    char s_070529d4[69];
-   char s_30d1fc05[47];
 #ifdef GEKKO
    char s_3180dcf5[67];
 #endif
@@ -2782,7 +2785,6 @@ static const struct
    char s_47df0525[65];
    char s_03e272fc[47];
    char s_5c2cc60f[100];
-   char s_d6d8d4be[93];
    char s_e86d2704[96];
    char s_dda608b5[291];
    char s_6f5a032a[40];
@@ -2926,7 +2928,6 @@ static const struct
 #endif
 #endif
    char s_acca011c[112];
-   char s_01efec73[51];
    char s_d3fc9970[59];
    char s_740bd7c4[65];
    char s_f052dae3[70];
@@ -3220,7 +3221,6 @@ static const struct
    char s_c7c09eb0[116];
    char s_7d4adfaf[33];
    char s_6f122164[39];
-   char s_61942cf6[70];
    char s_6b7e9271[130];
    char s_68b6e245[73];
    char s_3bb4fbf9[102];
@@ -3836,6 +3836,7 @@ static const struct
    char s_543fcabd[12];
    char s_59212b5f[17];
    char s_f26b6cff[27];
+   char s_a63c824a[9];
    char s_a9f3b2c3[20];
    char s_0e7aca8a[16];
    char s_ab1afe7c[16];
@@ -5028,7 +5029,7 @@ static const struct
    "V\303\255zszintes m\303\251ret",
    "CRT felbont\303\241s",
    "CRT szuperfelbont\303\241s",
-   "Egyedi friss\303\255t\303\251si gyakoris\303\241g",
+   "Egyedi k\303\251pfriss\303\255t\303\251si gyakoris\303\241g",
    "F\303\274gg\305\221legesen k\303\266z\303\251pre igaz\303\255t\303\241s",
    "V\303\255zszintes k\303\266z\303\251p\303\241ll\303\241s",
 #ifdef _3DS
@@ -5237,6 +5238,7 @@ static const struct
    "Y gomb (bal)",
    "%s billenty\305\261",
    "Billenty\305\261zet kontroller lek\303\251pez\303\251s t\303\255pusa",
+   "\303\226sszes",
    "Pisztoly kieg\303\251sz\303\255t\305\221 A",
    "Pisztoly kieg\303\251sz\303\255t\305\221 B",
    "Pisztoly kieg\303\251sz\303\255t\305\221 C",
@@ -5580,7 +5582,6 @@ static const struct
 #endif
 #endif
    "Teljes \303\272tvonal mutat\303\241sa",
-   "\"S\303\272g\303\263\" l\303\241that\303\263",
    "\"Inform\303\241ci\303\263k\" l\303\241that\303\263",
    "\"Tartalom bet\303\266lt\303\251se\" l\303\241that\303\263",
    "\"Tartalom bet\303\266lt\303\251se\" \303\251rtes\303\255t\303\251s ind\303\255t\303\241skor",
@@ -6220,7 +6221,6 @@ static const struct
    "Eg\303\251sz-szorz\303\263s",
    "Ki",
    "Kezd\305\221 k\303\266nyvt\303\241r",
-   "Konfigur\303\241ci\303\263s f\303\241jlok",
    "Sz\303\255n\303\266ssze\303\241ll\303\255t\303\241s",
    "Egyedi",
    "Drakula",
@@ -6668,6 +6668,10 @@ static const struct
    "Monitor sorsz\303\241ma",
    "A teljes k\303\251perny\305\221 kiterjeszt\303\251se a bev\303\241g\303\241sra Android \303\251s"
    " iOS eszk\303\266z\303\266k\303\266n",
+   "Mindig",
+   "Automatikus",
+   "Ki",
+   "Automatikus",
    "180 fok",
    "270 fok",
    "Norm\303\241l",
@@ -6711,6 +6715,8 @@ static const struct
    "M\303\251retez\303\251s",
    "Scanline szinkroniz\303\241l\303\241s",
    "G\303\266rd\303\274l\305\221 elektronsug\303\241r szimul\303\241l\303\241sa",
+   "V\303\255zszintes",
+   "F\303\274gg\305\221leges",
    "K\303\251p",
    "Videoshaderek",
    "Automatikus shader k\303\251sleltet\303\251s",
@@ -6749,7 +6755,6 @@ static const struct
    "Automatikus",
    "Szinkroniz\303\241l\303\241s",
    "Vide\303\263k",
-   "T\303\266bbsz\303\241las megjelen\303\255t\303\251s",
    "Metal argumens pufferek haszn\303\241lata (\303\272jraind\303\255t\303\241s sz\303\274ks\303\251"
    "ges)",
    "Vill\303\263dz\303\241smentes\303\255t\303\251s",
@@ -7534,7 +7539,6 @@ static const struct
    "A kimen\305\221 hanger\305\221 n\303\266vel\303\251se.",
    "Ki-be kapcsolja a pontos igazod\303\241st a tartalom k\303\251pfriss\303\255t\303\251s\303\251he"
    "z.",
-   "A RetroArch \303\241ltal felismert t\303\251nyleges eg\303\251r.",
 #ifdef GEKKO
    "Az x/y szorz\303\263 \303\241ll\303\255t\303\241sa a Wiimote f\303\251nypisztoly sebess\303\251g"
    "\303\251hez.",
@@ -7618,8 +7622,6 @@ static const struct
    "A remap f\303\241jlok ebbe a k\303\266nyvt\303\241rba ker\303\274lnek.",
    "Az aktu\303\241lis mag ir\303\241ny\303\255t\303\241s kioszt\303\241s\303\241nak fel\303\274lb"
    "\303\255r\303\241l\303\241sa a m\303\263dos\303\255tott (remap) kioszt\303\241ssal.",
-   "A mag melyik csatlakoz\303\263ja kapja meg a bemenetet a frontend %u. bemeneti csatlakoz\303\263"
-   "j\303\241r\303\263l.",
    "A remap f\303\241jlok csak arra az akt\303\255v kontrollerre lesznek \303\251rv\303\251nyesek, a"
    "mivel el voltak mentve.",
    "A virtu\303\241lis RetroPad lek\303\251pez\303\251se a fizikai bemeneti eszk\303\266zre. Ha a be"
@@ -7905,7 +7907,6 @@ static const struct
    "A k\303\266nyvt\303\241rbe\303\241ll\303\255t\303\241sok teljes el\303\251r\303\251si \303\272tj"
    "\303\241nak megjelen\303\255t\303\251se, a kiv\303\241lasztott k\303\266nyvt\303\241r neve helye"
    "tt.",
-   "A \"S\303\272g\303\263\" lehet\305\221s\303\251g jelenjen meg a f\305\221men\303\274ben.",
    "Az \"Inform\303\241ci\303\263k\" lehet\305\221s\303\251g jelenjen meg a f\305\221men\303\274ben.",
    "A \"Tartalom bet\303\266lt\303\251se\" lehet\305\221s\303\251g jelenjen meg a f\305\221men\303"
    "\274ben.",
@@ -8479,8 +8480,6 @@ static const struct
    ".",
    "A visszateker\303\251s be\303\241ll\303\255t\303\241sai.",
    "A f\303\241jlb\303\266ng\303\251sz\305\221 kezd\305\221 k\303\266nyvt\303\241ra.",
-   "Az alap\303\251rtelmezett konfigur\303\241ci\303\263s f\303\241jl ebbe a k\303\266nyvt\303\241rb"
-   "a ker\303\274l.",
    "M\303\241s sz\303\255n\303\266ssze\303\241ll\303\255t\303\241s v\303\241laszt\303\241sa. Az \"Eg"
    "yedi\" lehet\305\221s\303\251gn\303\251l k\303\274l\303\266n f\303\241jlb\303\263l lehet bet\303"
    "\266lteni a sz\303\255n\303\266ssze\303\241ll\303\255t\303\241st.",
@@ -9450,6 +9449,7 @@ static const struct
    "Id\305\221korl\303\241t",
    "Bemeneti csal\303\241s",
    "Bemeneti csal\303\241sf\303\241jl neve",
+   "Azonnali",
    "\303\215rja be a jelsz\303\263t",
    "Hib\303\241s jelsz\303\263.",
    "Hib\303\241s jelsz\303\263.",
@@ -9792,7 +9792,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_hu_blob_check[
-      (sizeof(msg_hash_hu_blob) == (188159u
+      (sizeof(msg_hash_hu_blob) == (187907u
 #ifdef ANDROID
        + 316u
 #endif
@@ -11029,6 +11029,7 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_A,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_B,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_C,
@@ -11365,7 +11366,6 @@ static const uint32_t msg_hash_hu_ids[] =
 #endif
 #endif
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_FULL_PATHS,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -11974,7 +11974,6 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_CUSTOM,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_DRACULA,
@@ -12414,6 +12413,10 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED_ROTATED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_NORMAL,
@@ -12456,6 +12459,8 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCANLINE_SYNC,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DELAY,
@@ -12494,7 +12499,6 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SYNCHRONIZATION_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_TAB,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_THREADED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VFILTER,
 #if defined(RARCH_MOBILE)
@@ -12958,7 +12962,6 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_DOWN,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_UP,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VRR_RUNLOOP_TOGGLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_INDEX,
 #ifdef GEKKO
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_SCALE,
 #endif
@@ -13000,7 +13003,6 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_QUIT_GAMEPAD_COMBO,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_BINDS_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_PORT,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RETROPAD_BINDS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RUMBLE_GAIN,
@@ -13144,7 +13146,6 @@ static const uint32_t msg_hash_hu_ids[] =
 #endif
 #endif
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_FULL_PATHS,
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -13438,7 +13439,6 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_GRANULARITY,
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_SUBLABEL_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_THEME_PRESET,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_SHOW_START_SCREEN,
@@ -14054,6 +14054,7 @@ static const uint32_t msg_hash_hu_ids[] =
    (uint32_t)MSG_INPUT_BIND_TIMEOUT,
    (uint32_t)MSG_INPUT_CHEAT,
    (uint32_t)MSG_INPUT_CHEAT_FILENAME,
+   (uint32_t)MSG_INPUT_COMBO_INSTANT,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_NOK,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_OK,

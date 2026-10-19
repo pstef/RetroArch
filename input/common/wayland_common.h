@@ -242,9 +242,9 @@ typedef struct input_ctx_wayland_data
    struct
    {
       struct wl_surface *surface;
-      int last_x, last_y;
-      int x, y;
-      int delta_x, delta_y;
+      uint32_t last_pos;   /* VIDEO_POS_PACK */
+      uint32_t pos;        /* VIDEO_POS_PACK */
+      uint32_t delta;      /* VIDEO_POS_PACK */
       /* Scroll of the current wl_pointer frame (seat v5+) */
       int axis_120[2];
       int axis_ticks[2];
@@ -274,11 +274,17 @@ typedef struct data_offer_ctx
  * handlers, between the shared configure processing and the clearing
  * of 'configured'.  EGL uses it to resize/create the wl_egl_window;
  * Vulkan needs no additional action and passes NULL. */
-/* Not on webOS, whose Wayland library is an older one: there the
- * seat stays on the default queue. */
+/* Not on webOS, whose Wayland library is an older one, without proxy
+ * wrappers or wl_display_roundtrip_queue(): its own code puts the seat
+ * on the input queue with what it has (wayland_common_webos.c), and
+ * the input driver's poll dispatches it the same way
+ * (WAYLAND_HAVE_QUEUE_DISPATCH, which needs only reads of one queue -
+ * and the backport, where it is built, falls back to the default queue
+ * on a library without them). */
 #ifndef WEBOS
 #define WAYLAND_HAVE_INPUT_QUEUE 1
 #endif
+#define WAYLAND_HAVE_QUEUE_DISPATCH 1
 
 /* The input driver's poll: dispatch the input queue, reading the
  * connection if nothing else has. Where there is no input queue it is
@@ -384,6 +390,9 @@ typedef struct gfx_ctx_wayland_data
    unsigned dims;
    unsigned buffer_dims;
    unsigned floating_dims;
+   /* Taken when the context is made, which a change of the setting
+    * redoes: swap_buffers runs on the thread that draws */
+   unsigned max_swapchain_images;
    unsigned last_buffer_scale;
    unsigned pending_buffer_scale;
    unsigned buffer_scale;
@@ -396,6 +405,8 @@ typedef struct gfx_ctx_wayland_data
 #endif
    bool core_hw_context_enable;
    bool fullscreen;
+   bool fullscreen_requested;
+   bool fullscreen_pending;
    bool maximized;
    bool resize;
    bool configured;

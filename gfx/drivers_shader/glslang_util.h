@@ -68,6 +68,36 @@ typedef enum glslang_format
    SLANG_FORMAT_MAX
 } glslang_format;
 
+static INLINE enum glslang_format glslang_hdr_output_format(
+      const struct video_shader *shader, unsigned pass,
+      enum glslang_format format)
+{
+   if (shader && pass + 1 == shader->passes)
+   {
+      int mode = video_shader_get_hdr_mode(shader);
+      if (mode == 0 && format == SLANG_FORMAT_R8G8B8A8_SRGB)
+         return SLANG_FORMAT_R8G8B8A8_UNORM;
+      if (mode == 1)
+         return SLANG_FORMAT_A2B10G10R10_UNORM_PACK32;
+      if (mode == 2)
+         return SLANG_FORMAT_R16G16B16A16_SFLOAT;
+   }
+   return format;
+}
+
+static INLINE enum glslang_format glslang_hdr_output_encoding(
+      const struct video_shader *shader, enum glslang_format legacy)
+{
+   int mode = video_shader_get_hdr_mode(shader);
+   if (mode == 0)
+      return SLANG_FORMAT_UNKNOWN;
+   if (mode == 1)
+      return SLANG_FORMAT_A2B10G10R10_UNORM_PACK32;
+   if (mode == 2)
+      return SLANG_FORMAT_R16G16B16A16_SFLOAT;
+   return legacy;
+}
+
 /* Textures with built-in meaning. */
 typedef enum slang_texture_semantic
 {
@@ -212,6 +242,19 @@ void glslang_include_cache_free(void *cache);
  * this way rather than a hundred thousand.  Not for compilation. */
 bool glslang_read_shader_pragmas_cached(const char *path,
       struct shader_line_buf *output, void *cache);
+
+struct glslang_last_pass
+{
+   unsigned index;
+   char name[64];
+   bool needs_target;
+   bool inspect_feedback;
+};
+
+/* Scale and format requirements are known before compilation. Reserve
+ * an optional final copy until compiled feedback usage is known. */
+void glslang_last_pass_init(const struct video_shader *shader,
+      void *cache, struct glslang_last_pass *state);
 
 /* As glslang_read_shader_file(), but reads through @cache. */
 bool glslang_read_shader_file_cached(const char *path,

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 #ifdef RARCH_INTERNAL
 #ifdef HAVE_CONFIG_H
@@ -23,6 +24,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/time.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #ifdef HAVE_SWRESAMPLE
 #include <libswresample/swresample.h>
 #endif
@@ -421,6 +423,42 @@ static bool video_buffer_wait_for_finished_slot(video_buffer_t *video_buffer,
    return VB_STATUS(video_buffer, VB_TAIL(video_buffer)) == KB_FINISHED;
 }
 
+/* Audio decoded ahead of playback this deep means the next video frame
+ * lies across a gap in the video track (frames dropped while
+ * recording, variable frame rate). The audio queue is 2 s. */
+#define VIDEO_GAP_AUDIO_BACKLOG 1.0
+
+static double audio_backlog_seconds(void);
+
+/* Main thread: waits for slot @index to be finished, like the wait
+ * above, but gives up across a gap in the video track. The decode
+ * thread only decodes a video packet once audio has caught up to it,
+ * so with this thread waiting and not taking audio it fills the audio
+ * queue and blocks too. The caller holds the frame on screen instead
+ * and keeps playing audio until the decoder reaches the next one. */
+static bool video_buffer_wait_for_frame(video_buffer_t *video_buffer,
+      unsigned index, retro_atomic_int_t *thread_dead)
+{
+   for (;;)
+   {
+      int key;
+      if (VB_STATUS(video_buffer, index) == KB_FINISHED)
+         return true;
+      if (     retro_atomic_load_acquire_int(thread_dead)
+            || audio_backlog_seconds() >= VIDEO_GAP_AUDIO_BACKLOG)
+         return false;
+      key = retro_eventcount_prepare_wait(&video_buffer->ec);
+      if (     VB_STATUS(video_buffer, index) == KB_FINISHED
+            || retro_atomic_load_acquire_int(thread_dead))
+      {
+         retro_eventcount_cancel_wait(&video_buffer->ec);
+         continue;
+      }
+      /* Bounded: the audio backlog grows without a notify. */
+      retro_eventcount_commit_wait_timeout(&video_buffer->ec, key, 10000);
+   }
+}
+
 /* Wakes every wait on the buffer to re-test: the decode thread is
  * gone, or a waiter has something else to look at. */
 static void video_buffer_wake(video_buffer_t *video_buffer)
@@ -587,9 +625,6 @@ static retro_input_state_t CORE_PREFIX(input_state_cb);
 #define FFMPEG3 ((LIBAVUTIL_VERSION_INT < AV_VERSION_INT(56, 6, 100)) || \
       (LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 10, 100)))
 #endif
-#ifndef FFMPEG8
-#define FFMPEG8 (LIBAVCODEC_VERSION_MAJOR >= 62)
-#endif
 
 #define MAX_STREAMS 8
 /* Sentinel return value indicating no frame available (EAGAIN/EOF) */
@@ -744,6 +779,9 @@ typedef struct ffmpeg_core_ctx
    enum AVPixelFormat hw_pix_fmt;
    bool force_sw_decoder;
 #endif
+   /* Try platform hardware decoders (h264_nvv4l2, h264_v4l2m2m,
+    * h264_mediacodec, ...) in decoder detection: ffmpeg_hw_wrappers. */
+   bool use_hw_wrappers;
 
    /* Stream bookkeeping */
    AVCodecContext *actx[MAX_STREAMS];
@@ -797,6 +835,8 @@ typedef struct ffmpeg_core_ctx
     * whole, while the main thread waits for the seek and touches
     * nothing. */
    retro_spsc_t audio_decode_fifo;
+   /* One run's worth of audio drained from the ring, sized with it. */
+   int16_t *run_audio_buffer;
    sthread_t *decode_thread_handle;
    retro_atomic_int_t decode_thread_dead;
    /* The decode thread can not go on: audio_starved holds the bytes it
@@ -878,6 +918,7 @@ static ffmpeg_core_ctx_t g_ctx;
 #define HW_DECODER_STR             (g_ctx.hw_decoder)
 #define HW_DECODING_ENABLED_STR    (g_ctx.hw_decoding_enabled)
 #define FORCE_SW_DECODER_STR       (g_ctx.force_sw_decoder)
+#define USE_HW_WRAPPERS_STR        (g_ctx.use_hw_wrappers)
 #endif
 #define ACTX_STR                   (g_ctx.actx)
 #define SCTX_STR                   (g_ctx.sctx)
@@ -1939,13 +1980,112 @@ void CORE_PREFIX(retro_set_controller_port_device)(unsigned port, unsigned devic
    (void)device;
 }
 
+/* Formats this core has always claimed. */
+#define FFMPEG_CORE_BASE_EXTENSIONS \
+   "mkv|avi|f4v|f4f|3gp|ogm|flv|mp4|mp3|flac|ogg|m4a|webm|3g2|mov|wmv|mpg|mpeg|vob|asf|divx|m2p|m2ts|ps|ts|mxf|wma|wav"
+
+/* Further formats, claimed only when this FFmpeg build can open them:
+ * RetroArch runs on platforms whose FFmpeg builds differ widely, so
+ * each needs its demuxer and, where the format implies one, its
+ * decoder. Keep in sync with the media types in msg_hash.c. */
+static const struct
+{
+   const char *ext;
+   const char *demuxer;
+   enum AVCodecID codec; /* AV_CODEC_ID_NONE: container only */
+} ffmpeg_core_extra_formats[] = {
+   { "ogv",  "ogg",       AV_CODEC_ID_THEORA   },
+   { "oga",  "ogg",       AV_CODEC_ID_VORBIS   },
+   { "opus", "ogg",       AV_CODEC_ID_OPUS     },
+   { "spx",  "ogg",       AV_CODEC_ID_SPEEX    },
+   { "mka",  "matroska",  AV_CODEC_ID_NONE     },
+   { "mk3d", "matroska",  AV_CODEC_ID_NONE     },
+   { "weba", "matroska",  AV_CODEC_ID_NONE     },
+   { "m4v",  "mov",       AV_CODEC_ID_NONE     },
+   { "m4b",  "mov",       AV_CODEC_ID_AAC      },
+   { "aac",  "aac",       AV_CODEC_ID_AAC      },
+   { "ac3",  "ac3",       AV_CODEC_ID_AC3      },
+   { "eac3", "eac3",      AV_CODEC_ID_EAC3     },
+   { "dts",  "dts",       AV_CODEC_ID_DTS      },
+   { "mts",  "mpegts",    AV_CODEC_ID_NONE     },
+   { "m2t",  "mpegts",    AV_CODEC_ID_NONE     },
+   { "m2v",  "mpegvideo", AV_CODEC_ID_MPEG2VIDEO },
+   { "mp2",  "mp3",       AV_CODEC_ID_MP2      },
+   { "aif",  "aiff",      AV_CODEC_ID_NONE     },
+   { "aiff", "aiff",      AV_CODEC_ID_NONE     },
+   { "wv",   "wv",        AV_CODEC_ID_WAVPACK  },
+   { "ape",  "ape",       AV_CODEC_ID_APE      },
+   { "tta",  "tta",       AV_CODEC_ID_TTA      },
+   { "mpc",  "mpc",       AV_CODEC_ID_MUSEPACK7 },
+   { "amr",  "amr",       AV_CODEC_ID_AMR_NB   },
+   { "au",   "au",        AV_CODEC_ID_NONE     },
+   { "caf",  "caf",       AV_CODEC_ID_NONE     },
+   { "rm",   "rm",        AV_CODEC_ID_NONE     },
+   { "rmvb", "rm",        AV_CODEC_ID_NONE     },
+   { "nut",  "nut",       AV_CODEC_ID_NONE     },
+   { "dv",   "dv",        AV_CODEC_ID_DVVIDEO  },
+   { "ivf",  "ivf",       AV_CODEC_ID_NONE     },
+};
+
+static bool ffmpeg_core_extra_format_ok(unsigned i)
+{
+   if (!av_find_input_format(ffmpeg_core_extra_formats[i].demuxer))
+      return false;
+   if (     ffmpeg_core_extra_formats[i].codec != AV_CODEC_ID_NONE
+         && !avcodec_find_decoder(ffmpeg_core_extra_formats[i].codec))
+      return false;
+   return true;
+}
+
+/* Exported for the frontend's media type detection (msg_hash.c lists
+ * these extensions as movie/music): true if this build can open ext.
+ * Base formats are always claimed. */
+/* Appends s to the extension list in buf, if it fits. */
+static size_t ffmpeg_core_append(char *buf, size_t len, size_t size,
+      const char *s)
+{
+   size_t n = strlen(s);
+   if (len + n + 1 > size)
+      return len;
+   memcpy(buf + len, s, n + 1);
+   return len + n;
+}
+
+bool CORE_PREFIX(ffmpeg_core_supports_extension)(const char *ext)
+{
+   unsigned i;
+   for (i = 0; i < sizeof(ffmpeg_core_extra_formats)
+         / sizeof(ffmpeg_core_extra_formats[0]); i++)
+      if (!strcmp(ext, ffmpeg_core_extra_formats[i].ext))
+         return ffmpeg_core_extra_format_ok(i);
+   return true;
+}
+
 void CORE_PREFIX(retro_get_system_info)(struct retro_system_info *info)
 {
+   static char extensions[512];
+
+   if (!*extensions)
+   {
+      unsigned i;
+      size_t _len = ffmpeg_core_append(extensions, 0, sizeof(extensions),
+            FFMPEG_CORE_BASE_EXTENSIONS);
+      for (i = 0; i < sizeof(ffmpeg_core_extra_formats)
+            / sizeof(ffmpeg_core_extra_formats[0]); i++)
+      {
+         if (!ffmpeg_core_extra_format_ok(i))
+            continue;
+         _len = ffmpeg_core_append(extensions, _len, sizeof(extensions), "|");
+         _len = ffmpeg_core_append(extensions, _len, sizeof(extensions),
+               ffmpeg_core_extra_formats[i].ext);
+      }
+   }
+
    memset(info, 0, sizeof(*info));
    info->library_name     = "FFmpeg";
    info->library_version  = "v1";
    info->need_fullpath    = true;
-   info->valid_extensions = "mkv|avi|f4v|f4f|3gp|ogm|flv|mp4|mp3|flac|ogg|m4a|webm|3g2|mov|wmv|mpg|mpeg|vob|asf|divx|m2p|m2ts|ps|ts|mxf|wma|wav";
+   info->valid_extensions = extensions;
 }
 
 void CORE_PREFIX(retro_get_system_av_info)(struct retro_system_av_info *info)
@@ -1979,6 +2119,9 @@ void CORE_PREFIX(retro_set_environment)(retro_environment_t cb)
 #if ENABLE_HW_ACCEL
       { "ffmpeg_hw_decoder", "Use Hardware decoder (restart); off|auto|"
          "cuda|d3d11va|drm|dxva2|mediacodec|opencl|qsv|vaapi|vdpau|videotoolbox" },
+#endif
+#if !FFMPEG3
+      { "ffmpeg_hw_wrappers", "Use platform hardware decoders (restart); enabled|disabled" },
 #endif
       { "ffmpeg_sw_decoder_threads", "Software decoder thread count (restart); auto|1|2|4|6|8|10|12|14|16" },
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
@@ -2105,6 +2248,17 @@ static void check_variables(bool firststart)
       else if (memcmp(color_var.value, "SMPTE240M", 9) == 0)
          space = AVCOL_SPC_SMPTE240M;
       retro_atomic_store_release_int(&g_ctx.color_space, space);
+   }
+
+   if (firststart)
+   {
+      struct retro_variable wrap_var = {0};
+      wrap_var.key        = "ffmpeg_hw_wrappers";
+      USE_HW_WRAPPERS_STR = true;
+      if (     CORE_PREFIX(environ_cb)(RETRO_ENVIRONMENT_GET_VARIABLE, &wrap_var)
+            && wrap_var.value
+            && !strcmp(wrap_var.value, "disabled"))
+         USE_HW_WRAPPERS_STR = false;
    }
 
 #if ENABLE_HW_ACCEL
@@ -2421,15 +2575,20 @@ static int seek_adjust(int target)
    return 0;
 }
 
+static double audio_backlog_seconds(void)
+{
+   if (     AUDIO_STREAMS_NUM_STR <= 0
+         || !g_ctx.audio_decode_fifo_init
+         || MEDIA_STR.sample_rate <= 0)
+      return 0.0;
+   return (double)retro_spsc_read_avail(&AUDIO_DECODE_FIFO_STR)
+      / (MEDIA_STR.sample_rate * sizeof(int16_t) * 2);
+}
+
 void CORE_PREFIX(retro_run)(void)
 {
    double min_pts;
-   /* A clip with no audio stream has a sample rate of zero, and a
-    * zero-length array is not an array: the declaration alone is
-    * undefined, before anything reads it. One element costs nothing
-    * and is never used, since to_read_frames comes out of the same
-    * rate and is zero too. */
-   int16_t audio_buffer[(MEDIA_STR.sample_rate / 20) + 1];
+   int16_t *audio_buffer        = g_ctx.run_audio_buffer;
    bool left, right, up, down, l1, l2, r1, r2;
    int16_t ret                  = 0;
    size_t to_read_frames        = 0;
@@ -2665,9 +2824,11 @@ void CORE_PREFIX(retro_run)(void)
             if (!VIDEO_BUFFER_STR)
                break;
 
-            if (!DECODE_THREAD_DEAD_STR)
-               video_buffer_wait_for_finished_slot(VIDEO_BUFFER_STR,
-                     &g_ctx.decode_thread_dead);
+            /* Gap in the video track: hold the current frame. */
+            if (     !DECODE_THREAD_DEAD_STR
+                  && !video_buffer_wait_for_frame(VIDEO_BUFFER_STR,
+                     VB_TAIL(VIDEO_BUFFER_STR), &g_ctx.decode_thread_dead))
+               break;
 
             if (!DECODE_THREAD_DEAD_STR)
             {
@@ -2735,6 +2896,11 @@ void CORE_PREFIX(retro_run)(void)
          }
 
          mix_factor = (min_pts - FRAMES_STR[0].pts) / (FRAMES_STR[1].pts - FRAMES_STR[0].pts);
+         /* A frame held across a gap leaves min_pts past both. */
+         if (!(mix_factor >= 0.0f))
+            mix_factor = 0.0f;
+         else if (mix_factor > 1.0f)
+            mix_factor = 1.0f;
 
          if (!TEMPORAL_INTERPOLATION_STR)
             mix_factor = 1.0f;
@@ -2787,6 +2953,16 @@ void CORE_PREFIX(retro_run)(void)
              * No buffer is no frame ready, which is what the dupe
              * below is for. */
             if (!VIDEO_BUFFER_STR)
+               break;
+
+            /* Gap in the video track: keep holding the frame on screen.
+             * The next one is in the slot after the held one. */
+            if (     !DECODE_THREAD_DEAD_STR
+                  && !video_buffer_wait_for_frame(VIDEO_BUFFER_STR,
+                     g_ctx.held_slot
+                     ? (g_ctx.held_slot->index + 1) % VIDEO_BUFFER_STR->capacity
+                     : (unsigned)VB_TAIL(VIDEO_BUFFER_STR),
+                     &g_ctx.decode_thread_dead))
                break;
 
             /* The frame on screen is about to be replaced (or, when
@@ -2914,7 +3090,7 @@ static enum AVPixelFormat init_hw_decoder(struct AVCodecContext *ctx,
 #endif
    int ret = 0;
    enum AVPixelFormat decoder_pix_fmt = AV_PIX_FMT_NONE;
-   const AVCodec *codec = retro_find_decoder(FCTX_STR->streams[VIDEO_STREAM_INDEX_STR]->codecpar->codec_id);
+   const AVCodec *codec = ctx->codec;
 
 #if !FFMPEG3
    for (i = 0;; i++)
@@ -2942,7 +3118,8 @@ static enum AVPixelFormat init_hw_decoder(struct AVCodecContext *ctx,
          if (pix_fmts != NULL)
          {
             /* Look if codec can supports the pix format of the device */
-            for (size_t j = 0; pix_fmts[j] != AV_PIX_FMT_NONE; j++)
+            size_t j;
+            for (j = 0; pix_fmts[j] != AV_PIX_FMT_NONE; j++)
                if (pix_fmts[j] == device_pix_fmt)
                {
                   decoder_pix_fmt = pix_fmts[j];
@@ -2976,7 +3153,7 @@ exit:
          decoder_pix_fmt = AV_PIX_FMT_NONE;
       }
       else
-         ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+         ctx->hw_device_ctx = hw_device_ctx; /* the context owns it */
    }
 
    return decoder_pix_fmt;
@@ -3052,8 +3229,10 @@ static enum AVPixelFormat select_decoder(AVCodecContext *ctx,
 static enum AVPixelFormat get_format(AVCodecContext *ctx,
                                      const enum AVPixelFormat *pix_fmts)
 {
+   size_t i;
+
    /* Look if we can reuse the current decoder */
-   for (size_t i = 0; pix_fmts[i] != AV_PIX_FMT_NONE; i++)
+   for (i = 0; pix_fmts[i] != AV_PIX_FMT_NONE; i++)
    {
       if (pix_fmts[i] == g_ctx.hw_pix_fmt)
          return g_ctx.hw_pix_fmt;
@@ -3065,17 +3244,169 @@ static enum AVPixelFormat get_format(AVCodecContext *ctx,
 }
 #endif
 
-static bool open_codec(AVCodecContext **ctx, enum AVMediaType type, unsigned index)
+/* Decoder detection: try every decoder for a stream's codec - for
+ * video, platform hardware decoders first (ffmpeg_hw_wrappers), then
+ * the default one (with the hwaccel path), then other software ones -
+ * and keep the first that opens and, for audio and video, decodes a
+ * frame this core can use. avcodec_find_decoder() alone gives whichever
+ * the build registered first, which need not work here. */
+#define MAX_DECODER_CANDIDATES 16
+#define DECODER_PROBE_PACKETS  64
+
+/* Can this core use the decoded frame? Video: a software format
+ * swscale accepts, or the hwaccel format select_decoder() set up.
+ * Audio: any packed or planar sample format swresample converts. */
+static bool frame_usable(const AVFrame *frame, enum AVMediaType type)
 {
-   int ret              = 0;
-   const AVCodec *codec = retro_find_decoder(FCTX_STR->streams[index]->codecpar->codec_id);
-   if (!codec)
+   if (type == AVMEDIA_TYPE_AUDIO)
+      return frame->nb_samples > 0
+         && av_get_bytes_per_sample((enum AVSampleFormat)frame->format) > 0;
+
    {
-      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Couldn't find suitable decoder\n");
+      const AVPixFmtDescriptor *desc =
+         av_pix_fmt_desc_get((enum AVPixelFormat)frame->format);
+
+      if (!desc)
+         return false;
+      if (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)
+      {
+#if ENABLE_HW_ACCEL
+         return HW_DECODING_ENABLED_STR && frame->format == g_ctx.hw_pix_fmt;
+#else
+         return false;
+#endif
+      }
+      return sws_isSupportedInput((enum AVPixelFormat)frame->format) > 0;
+   }
+}
+
+static bool input_is_seekable(void)
+{
+   return FCTX_STR->pb
+      && (FCTX_STR->pb->seekable & AVIO_SEEKABLE_NORMAL)
+      && !(FCTX_STR->iformat->flags & AVFMT_NOFILE);
+}
+
+/* Rewind the demuxer to the start after a probe. */
+static bool rewind_input(unsigned index)
+{
+   int64_t start = FCTX_STR->streams[index]->start_time;
+   if (start == AV_NOPTS_VALUE)
+      start = 0;
+   if (av_seek_frame(FCTX_STR, (int)index, start, AVSEEK_FLAG_BACKWARD) < 0)
       return false;
+   avformat_flush(FCTX_STR);
+   return true;
+}
+
+/* Decode from the start of the stream until one frame comes out. True
+ * if that frame is usable. The caller rewinds. */
+static bool probe_decoder(AVCodecContext *ctx, enum AVMediaType type,
+      unsigned index)
+{
+   int packets      = 0;
+   bool decoded     = false;
+   bool usable      = false;
+   AVPacket *pkt    = av_packet_alloc();
+   AVFrame  *frame  = av_frame_alloc();
+
+   if (!pkt || !frame)
+      goto end;
+
+   while (!decoded && packets < DECODER_PROBE_PACKETS
+         && av_read_frame(FCTX_STR, pkt) >= 0)
+   {
+      if (pkt->stream_index == (int)index)
+      {
+         int ret = avcodec_send_packet(ctx, pkt);
+         packets++;
+         if (ret < 0 && ret != AVERROR(EAGAIN))
+         {
+            av_packet_unref(pkt);
+            break;
+         }
+         if (avcodec_receive_frame(ctx, frame) == 0)
+            decoded = true;
+      }
+      av_packet_unref(pkt);
    }
 
+   /* Decoders with delay may hold the first frame until drained. */
+   if (!decoded && packets)
+   {
+      avcodec_send_packet(ctx, NULL);
+      if (avcodec_receive_frame(ctx, frame) == 0)
+         decoded = true;
+   }
+
+   usable = decoded && frame_usable(frame, type);
+   if (decoded && !usable)
+      log_cb(RETRO_LOG_INFO, "[FFMPEG] %s decodes to %s, which this core can't use.\n",
+            ctx->codec->name, type == AVMEDIA_TYPE_AUDIO
+            ? av_get_sample_fmt_name((enum AVSampleFormat)frame->format)
+            : av_get_pix_fmt_name((enum AVPixelFormat)frame->format));
+
+end:
+   av_frame_free(&frame);
+   av_packet_free(&pkt);
+   avcodec_flush_buffers(ctx);
+   return usable;
+}
+
+static int decoder_candidates(enum AVCodecID id, enum AVMediaType type,
+      const AVCodec **list, int max)
+{
+   int n                = 0;
+   const AVCodec *def   = retro_find_decoder(id);
+#if !FFMPEG3
+   int pass;
+   bool allow_hw        = (type == AVMEDIA_TYPE_VIDEO) && USE_HW_WRAPPERS_STR;
+#endif
+
+#if FFMPEG3
+   if (def)
+      list[n++] = def;
+#else
+   /* 0: platform hardware decoders (video only),
+    * 1: the default decoder, 2: any other software decoder. */
+   for (pass = 0; pass < 3 && n < max; pass++)
+   {
+      void *it          = NULL;
+      const AVCodec *c  = NULL;
+
+      if (pass == 1)
+      {
+         if (def && !(def->capabilities & AV_CODEC_CAP_HARDWARE))
+            list[n++] = def;
+         continue;
+      }
+
+      while ((c = av_codec_iterate(&it)) && n < max)
+      {
+         bool hw = (c->capabilities & AV_CODEC_CAP_HARDWARE) != 0;
+         if (c->id != id || !av_codec_is_decoder(c))
+            continue;
+         if (c->capabilities & AV_CODEC_CAP_EXPERIMENTAL)
+            continue;
+         if (pass == 0 ? !(hw && allow_hw) : (hw || c == def))
+            continue;
+         list[n++] = c;
+      }
+   }
+#endif
+   return n;
+}
+
+/* Allocate and open ctx for codec. Video gets the hwaccel set-up for
+ * non-wrapper decoders, exactly as before. */
+static bool open_codec_with(AVCodecContext **ctx, const AVCodec *codec,
+      enum AVMediaType type, unsigned index)
+{
+   int ret = 0;
+
    *ctx = avcodec_alloc_context3(codec);
+   if (!*ctx)
+      return false;
    avcodec_parameters_to_context((*ctx), FCTX_STR->streams[index]->codecpar);
 
    if (type == AVMEDIA_TYPE_VIDEO)
@@ -3083,8 +3414,20 @@ static bool open_codec(AVCodecContext **ctx, enum AVMediaType type, unsigned ind
       VIDEO_STREAM_INDEX_STR = index;
 
 #if ENABLE_HW_ACCEL
-      VCTX_STR->get_format  = get_format;
-      g_ctx.hw_pix_fmt = select_decoder((*ctx), NULL);
+      g_ctx.hw_pix_fmt        = AV_PIX_FMT_NONE;
+      HW_DECODING_ENABLED_STR = false;
+      if (codec->capabilities & AV_CODEC_CAP_HARDWARE)
+      {
+         /* A hardware wrapper decodes by itself into frames it hands
+          * back; no hwaccel device or get_format() hook. */
+         log_cb(RETRO_LOG_INFO, "[FFMPEG] Trying hardware decoder %s.\n",
+               codec->name);
+      }
+      else
+      {
+         (*ctx)->get_format = get_format;
+         g_ctx.hw_pix_fmt   = select_decoder((*ctx), NULL);
+      }
 #else
       select_decoder((*ctx), NULL);
 #endif
@@ -3093,13 +3436,76 @@ static bool open_codec(AVCodecContext **ctx, enum AVMediaType type, unsigned ind
    if ((ret = avcodec_open2(*ctx, codec, NULL)) < 0)
    {
 #ifdef __cplusplus
-      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Could not open codec: %d\n", ret);
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Could not open codec %s: %d\n",
+            codec->name, ret);
 #else
-      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Could not open codec: %s\n", av_err2str(ret));
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Could not open codec %s: %s\n",
+            codec->name, av_err2str(ret));
 #endif
+      avcodec_free_context(ctx);
       return false;
    }
 
+   return true;
+}
+
+static bool open_codec(AVCodecContext **ctx, enum AVMediaType type, unsigned index)
+{
+   const AVCodec *list[MAX_DECODER_CANDIDATES];
+   enum AVCodecID id = FCTX_STR->streams[index]->codecpar->codec_id;
+   int i, n;
+   bool probe;
+
+   *ctx = NULL;
+   n    = decoder_candidates(id, type, list, MAX_DECODER_CANDIDATES);
+   if (!n)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] This FFmpeg build has no decoder for %s (%s).\n",
+            avcodec_get_name(id), av_get_media_type_string(type));
+      return false;
+   }
+
+   /* Probing reads packets, so the input must be rewindable; otherwise
+    * take the first decoder that opens, as before. With one candidate,
+    * or for subtitles, there is nothing worth probing. */
+   probe = n > 1
+      && (type == AVMEDIA_TYPE_VIDEO || type == AVMEDIA_TYPE_AUDIO)
+      && input_is_seekable();
+
+   for (i = 0; i < n; i++)
+   {
+      if (!open_codec_with(ctx, list[i], type, index))
+         continue;
+
+      if (!probe)
+         break;
+
+      if (probe_decoder(*ctx, type, index))
+      {
+         if (!rewind_input(index))
+            log_cb(RETRO_LOG_WARN, "[FFMPEG] Could not rewind after probing the decoder.\n");
+         break;
+      }
+
+      log_cb(RETRO_LOG_INFO, "[FFMPEG] Decoder %s failed its probe, trying the next.\n",
+            list[i]->name);
+      avcodec_free_context(ctx);
+      if (!rewind_input(index))
+      {
+         log_cb(RETRO_LOG_ERROR, "[FFMPEG] Could not rewind after probing the decoder.\n");
+         return false;
+      }
+   }
+
+   if (!*ctx)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] No working decoder for %s (%s).\n",
+            avcodec_get_name(id), av_get_media_type_string(type));
+      return false;
+   }
+
+   log_cb(RETRO_LOG_INFO, "[FFMPEG] Using %s decoder %s.\n",
+         av_get_media_type_string(type), (*ctx)->codec->name);
    return true;
 }
 
@@ -3721,7 +4127,7 @@ static void decode_thread(void *data)
 {
    unsigned i;
    bool eof                = false;
-   struct SwrContext *swr[(AUDIO_STREAMS_NUM_STR > 0) ? AUDIO_STREAMS_NUM_STR : 1];
+   struct SwrContext *swr[MAX_STREAMS];
    AVFrame *aud_frame      = NULL;
    int16_t *audio_buffer   = NULL;
    size_t audio_buffer_cap = 0;
@@ -4109,6 +4515,8 @@ void CORE_PREFIX(retro_unload_game)(void)
    if (g_ctx.audio_decode_fifo_init)
       retro_spsc_free(&AUDIO_DECODE_FIFO_STR);
    g_ctx.audio_decode_fifo_init = false;
+   free(g_ctx.run_audio_buffer);
+   g_ctx.run_audio_buffer = NULL;
 
 #ifdef HAVE_SSA
    ASS_LOCK_STR = NULL;
@@ -4121,32 +4529,18 @@ void CORE_PREFIX(retro_unload_game)(void)
    g_ctx.decoded_frame_cnt = 0;
    AUDIO_FRAMES_STR = 0;
 
+   /* Freed, not only closed: avcodec_close() leaves the context
+    * allocated. */
    for (i = 0; i < MAX_STREAMS; i++)
    {
-#if FFMPEG8
       if (SCTX_STR[i])
          avcodec_free_context(&SCTX_STR[i]);
       if (ACTX_STR[i])
          avcodec_free_context(&ACTX_STR[i]);
-#else
-      if (SCTX_STR[i])
-         avcodec_close(SCTX_STR[i]);
-      if (ACTX_STR[i])
-         avcodec_close(ACTX_STR[i]);
-#endif
-      SCTX_STR[i] = NULL;
-      ACTX_STR[i] = NULL;
    }
 
    if (VCTX_STR)
-   {
-#if FFMPEG8
       avcodec_free_context(&VCTX_STR);
-#else
-      avcodec_close(VCTX_STR);
-#endif
-      VCTX_STR = NULL;
-   }
 
    if (FCTX_STR)
    {
@@ -4285,6 +4679,10 @@ bool CORE_PREFIX(retro_load_game)(const struct retro_game_info *info)
       g_ctx.audio_decode_fifo_init = retro_spsc_init(&AUDIO_DECODE_FIFO_STR,
          MEDIA_STR.sample_rate * sizeof(int16_t) * 2 * 2
       );
+      g_ctx.run_audio_buffer = (int16_t*)malloc(
+         ((MEDIA_STR.sample_rate / 20) + 1) * sizeof(int16_t));
+      if (!g_ctx.run_audio_buffer)
+         goto error;
    }
 
    if (!g_ctx.ecs_inited)
@@ -4402,7 +4800,7 @@ bool CORE_PREFIX(retro_unserialize)(const void *data, size_t len)
       AUDIO_STREAM_IDX_SET(info.audio_streams_ptr);
       SUBTITLE_STREAM_IDX_SET(info.subtitle_streams_ptr);
 
-      seek_frame(info.frame_cnt - g_ctx.decoded_frame_cnt);
+      seek_frame((int)(info.frame_cnt - g_ctx.decoded_frame_cnt));
 
       return true;
    }

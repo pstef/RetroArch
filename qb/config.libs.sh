@@ -425,6 +425,9 @@ check_pkgconf RSOUND rsound 1.1
 check_pkgconf ROAR libroar 1.0.12
 check_val '' JACK -ljack '' jack 0.120.1 '' false
 check_val '' PULSE -lpulse '' libpulse '' '' false
+# The driver's writer hands audio to the server's thread through a
+# lock-free ring and parks on an eventcount, both threads-only.
+check_enabled THREADS PULSE PulseAudio 'Threads are' false
 check_val '' PIPEWIRE -lpipewire-0.3 'pipewire-0.3 spa-0.2' libpipewire-0.3 '' '' false
 # PIPEWIRE_STABLE only qualifies PIPEWIRE (it gates the camera driver), so
 # it must not be probed when PipeWire itself is off: with --disable-pipewire
@@ -630,6 +633,22 @@ check_enabled THREADS LIBUSB libusb 'Threads are' false
 check_enabled HID LIBUSB libusb 'HID is' false
 check_val '' LIBUSB -lusb-1.0 libusb-1.0 libusb-1.0 1.0.13 '' false
 
+# hidraw brings the HID joypad driver on Linux without libusb, which
+# stays as --enable-hid leaves it.
+check_platform Linux HIDRAW 'hidraw is' true
+check_header '' HIDRAW linux/hidraw.h
+if [ "$HAVE_HIDRAW" = 'yes' ]; then
+   add_opt HID yes
+fi
+
+# WinUSB, loaded when used, brings the HID joypad driver on Windows
+# for pads bound to it; libusb stays as --enable-hid leaves it.
+check_enabled THREADS WINUSB WinUSB 'Threads are' false
+check_platform Win32 WINUSB 'WinUSB is' true
+if [ "$HAVE_WINUSB" = 'yes' ]; then
+   add_opt HID yes
+fi
+
 check_lib '' DINPUT -ldinput8
 check_lib '' D3D9 -ld3d9
 check_lib '' DSOUND -ldsound
@@ -724,12 +743,14 @@ check_lib '' DRMINGW -lexchndl
 check_enabled THREADS FFMPEG FFmpeg 'Threads are' false
 
 if [ "$HAVE_FFMPEG" != 'no' ]; then
-   check_val '' AVCODEC -lavcodec '' libavcodec 57 '' false
-   check_val '' AVFORMAT -lavformat '' libavformat 57 '' false
-   check_val '' AVDEVICE -lavdevice '' libavdevice 57 '' false
-   check_val '' SWRESAMPLE -lswresample '' libswresample 2 '' false
-   check_val '' AVUTIL -lavutil '' libavutil 55 '' false
-   check_val '' SWSCALE -lswscale '' libswscale 4 '' false
+   # FFmpeg 3.1's libraries: the recorder and the media player use the
+   # send/receive codec API (avcodec_send_frame, libavcodec 57.37).
+   check_val '' AVCODEC -lavcodec '' libavcodec 57.48.101 '' false
+   check_val '' AVFORMAT -lavformat '' libavformat 57.41.100 '' false
+   check_val '' AVDEVICE -lavdevice '' libavdevice 57.0.101 '' false
+   check_val '' SWRESAMPLE -lswresample '' libswresample 2.1.100 '' false
+   check_val '' AVUTIL -lavutil '' libavutil 55.28.100 '' false
+   check_val '' SWSCALE -lswscale '' libswscale 4.1.100 '' false
 
    check_header '' AV_CHANNEL_LAYOUT libavutil/channel_layout.h
 
@@ -889,6 +910,10 @@ elif [ "$HAVE_VULKAN" != "no" ] && [ "$OS" = 'Darwin' ]; then
 else
    check_lib '' VULKAN -lvulkan vkCreateInstance
 fi
+
+check_platform Linux OPENXR 'OpenXR is' true
+check_enabled 'VULKAN OPENGL OPENGL_CORE' OPENXR OpenXR 'Vulkan and OpenGL are' false
+check_enabled THREADS OPENXR OpenXR 'Threads are' false
 
 if [ "$HAVE_MENU" != 'no' ]; then
    if [ "$HAVE_OPENGL" = 'no' ]      &&

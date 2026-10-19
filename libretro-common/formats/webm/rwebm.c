@@ -5,7 +5,7 @@
  * The decoding glue lives next door: rwebm_audio.c (audio track to PCM)
  * and rwebm_video.c (video track to images).
  *
- * Scope: WebM restricts Matroska to VP8/VP9 video and Vorbis/Opus audio,
+ * Scope: VP8/VP9/AV1 video, Vorbis/Opus audio and selected Matroska codecs,
  * SimpleBlock/BlockGroup lacing, and a Segment/Cluster/Block layout.  The
  * parser reads the elements it needs (EBML head just far enough to accept
  * the stream, Segment > Info for the timestamp scale and duration,
@@ -22,9 +22,8 @@
  *
  * What it does not implement: SeekHead (Cues are found by the header
  * walk reaching them, not by following a pointer to them), chapters,
- * tags, attachments, subtitle tracks, and encrypted streams.  Codecs other than
- * VP8/VP9/Vorbis/Opus are reported as unknown and their packets can be
- * skipped by the caller.
+ * tags, attachments, subtitle tracks, and encrypted streams. Unrecognised
+ * codecs retain their raw CodecID so callers can skip their packets.
  *
  * SPDX-License-Identifier: MIT  (RetroArch libretro-common)
  */
@@ -205,6 +204,53 @@ static double be_double_clamp(double v, double lo, double hi)
    return v;
 }
 
+static void rwebm_parse_mastering(const uint8_t *body, size_t size,
+      video_mastering_display_t *out)
+{
+   video_mastering_display_t m;
+   ebml_reader r;
+   memset(&m, 0, sizeof(m));
+   r.p = body;
+   r.end = body + size;
+   while (r.p < r.end)
+   {
+      int ok;
+      uint32_t id = ebml_read_id(&r);
+      uint64_t n = ebml_read_vint(&r, 1, &ok);
+      const uint8_t *p = r.p;
+      if (!id || !ok || n > (uint64_t)(r.end - p))
+         return;
+      if (id >= 0x55d1u && id <= 0x55dau)
+      {
+         unsigned index = id - 0x55d1u;
+         double value;
+         if ((n != 4 && n != 8) || (m.present & (1u << index)))
+            return;
+         value = be_float(p, (size_t)n);
+         if (!(value >= 0.0 && value <= (index < 8 ? 1.0 : 429496.7295)))
+            return;
+         if (index < 8)
+            m.chromaticity[index] = (uint16_t)(value * 50000.0 + 0.5);
+         else
+         {
+            double scaled = value * 10000.0;
+            uint32_t level = scaled >= 4294967295.0
+               ? UINT32_MAX : (uint32_t)(scaled + 0.5);
+            if (index == 8)
+               m.luminance_max = level;
+            else
+               m.luminance_min = level;
+         }
+         m.present |= 1u << index;
+      }
+      r.p = p + (size_t)n;
+   }
+   if ((m.present & 0x300u) == 0x300u && m.luminance_min > m.luminance_max)
+      return;
+   *out = m;
+}
+
+
 /* ===== Demuxer state ===== */
 
 struct rwebm_cue
@@ -350,6 +396,7 @@ static enum rwebm_codec codec_from_id(const char *id)
 {
    if (!strcmp(id, "V_VP8"))    return RWEBM_CODEC_VP8;
    if (!strcmp(id, "V_VP9"))    return RWEBM_CODEC_VP9;
+   if (!strcmp(id, "V_AV1"))    return RWEBM_CODEC_AV1;
    if (!strcmp(id, "A_VORBIS")) return RWEBM_CODEC_VORBIS;
    if (!strcmp(id, "A_OPUS"))   return RWEBM_CODEC_OPUS;
    if (!strcmp(id, "V_MPEG4/ISO/AVC")) return RWEBM_CODEC_H264;
@@ -404,7 +451,7 @@ static void parse_track_av(const uint8_t *p, const uint8_t *end,
                uint32_t  cid   = ebml_read_id(&cr);
                uint64_t  csz   = ebml_read_vint(&cr, 1, &cok);
                const uint8_t *cb = cr.p;
-               if (!cid || !cok || cb + csz > cr.end)
+               if (!cid || !cok || csz > (uint64_t)(cr.end - cb))
                   break;
                switch (cid)
                {
@@ -419,6 +466,9 @@ static void parse_track_av(const uint8_t *p, const uint8_t *end,
                      break;
                   case ID_PRIMARIES:
                      trk->primaries               = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  case 0x55d0u:
+                     rwebm_parse_mastering(cb, (size_t)csz, &trk->mastering);
                      break;
                   case ID_MAXCLL:
                      trk->max_cll                 = (unsigned)be_uint(cb, (size_t)csz);
@@ -533,6 +583,16 @@ size_t rwebm_tell(const rwebm_t *m)
    if (!m || !m->cur)
       return 0;
    return (size_t)(m->cur - m->data);
+}
+
+size_t rwebm_consumed(const rwebm_t *m)
+{
+   const uint8_t *next;
+   if (!m || !m->cur) return 0;
+   next = m->cur;
+   if (m->lace_index < m->lace_count && m->lace_frame_ptr[m->lace_index] < next)
+      next = m->lace_frame_ptr[m->lace_index];
+   return (size_t)(next - m->data);
 }
 
 const rwebm_track *rwebm_get_track(const rwebm_t *webm, int index)

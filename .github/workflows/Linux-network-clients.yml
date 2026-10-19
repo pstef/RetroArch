@@ -46,13 +46,34 @@ jobs:
               samba-dsdb-modules samba-ad-provision samba-vfs-modules acl smbclient tshark && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y --no-install-recommends build-essential clang \
             gcc-mingw-w64-x86-64 openssl samba libtirpc-dev flex bison autoconf automake wine wine64 \
@@ -61,6 +82,9 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
 
       - name: Built-in TLS client against a local openssl server
         shell: bash
@@ -111,6 +135,28 @@ jobs:
             make -C samples/network/mcp_server check
           make -C samples/network/mcp_server clean
 
+      - name: GET_LOG's ring, written from four threads while read
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -eu
+          make -C samples/runloop/log_ring clean
+          make -C samples/runloop/log_ring SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+            make -C samples/runloop/log_ring check
+          make -C samples/runloop/log_ring clean
+
+      - name: Command options and speed setters
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -eu
+          make -C samples/network/command_options clean
+          make -C samples/network/command_options SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+            make -C samples/network/command_options check
+          make -C samples/network/command_options clean
+
 
       - name: Windows builds under Wine
         shell: bash
@@ -141,6 +187,8 @@ jobs:
           make -C samples/network/mcp_server compiler=x86_64-w64-mingw32-gcc
           (cd samples/network/mcp_server && wine ./mcp_server_test.exe)
           make -C samples/network/mcp_server clean
+          make -C samples/network/command_options check compiler=x86_64-w64-mingw32-gcc RUNNER=wine
+          make -C samples/network/command_options clean
           export CC=x86_64-w64-mingw32-gcc RUNNER=wine EXE=.exe
           make -C samples/network/tls_retro clean
           samples/network/tls_retro/local_server_test.sh
@@ -194,7 +242,7 @@ jobs:
           # for memory errors, undefined behaviour and leaks. UBSan found
           # a NULL memcpy in the SHA-2 stream updates on the SHA-384 PRF
           # path the first time this ran.
-          export CFLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          export CFLAGS="-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
           export LDFLAGS="-fsanitize=address,undefined"
           export ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1
           export UBSAN_OPTIONS=print_stacktrace=1

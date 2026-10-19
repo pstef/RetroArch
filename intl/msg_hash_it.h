@@ -803,6 +803,7 @@ static const struct
    char s_56e1b336[22];
    char s_313d15c0[9];
    char s_e9f0dd82[38];
+   char s_0bd714f7[6];
    char s_0bebb490[12];
    char s_72765a06[14];
    char s_72765a07[14];
@@ -1127,7 +1128,6 @@ static const struct
 #endif
 #endif
    char s_a6e5d0ee[25];
-   char s_f228c6c5[15];
    char s_11926382[22];
    char s_645ae416[26];
    char s_df92f5b5[40];
@@ -1725,7 +1725,6 @@ static const struct
    char s_ccfe26d1[13];
    char s_728ca1d3[12];
    char s_5f612db6[21];
-   char s_9f29f708[23];
    char s_a9145c83[16];
    char s_22f52844[11];
    char s_06842e2b[13];
@@ -2174,6 +2173,8 @@ static const struct
    char s_4b582a0c[39];
    char s_61213f1d[19];
    char s_95e4b29f[65];
+   char s_60258de0[7];
+   char s_34b2592a[12];
    char s_317b17ed[10];
    char s_94c8d15f[10];
    char s_de16b5d2[8];
@@ -2215,6 +2216,8 @@ static const struct
    char s_69b801ef[13];
    char s_a40653a7[34];
    char s_52e3d6ea[41];
+   char s_2c868ae4[12];
+   char s_9c535394[10];
    char s_a9c8430e[13];
    char s_f5911f43[20];
    char s_9017e0d3[14];
@@ -2248,7 +2251,6 @@ static const struct
    char s_45816e1d[25];
    char s_730df420[23];
    char s_bcddf275[6];
-   char s_258060bf[18];
    char s_f90edcc2[51];
    char s_ad14307a[21];
 #if defined(RARCH_MOBILE)
@@ -2703,7 +2705,6 @@ static const struct
    char s_74d87c7a[55];
    char s_12adb1e7[52];
    char s_070529d4[84];
-   char s_30d1fc05[43];
 #ifdef GEKKO
    char s_3180dcf5[68];
 #endif
@@ -2745,7 +2746,6 @@ static const struct
    char s_47df0525[58];
    char s_03e272fc[65];
    char s_5c2cc60f[94];
-   char s_d6d8d4be[89];
    char s_e86d2704[75];
    char s_dda608b5[319];
    char s_6f5a032a[55];
@@ -2883,7 +2883,6 @@ static const struct
 #endif
 #endif
    char s_acca011c[119];
-   char s_01efec73[46];
    char s_d3fc9970[53];
    char s_740bd7c4[57];
    char s_f052dae3[87];
@@ -3165,7 +3164,6 @@ static const struct
    char s_c7c09eb0[119];
    char s_7d4adfaf[44];
    char s_6f122164[55];
-   char s_61942cf6[74];
    char s_6b7e9271[115];
    char s_68b6e245[74];
    char s_3bb4fbf9[132];
@@ -3765,6 +3763,7 @@ static const struct
    char s_b0e45a57[27];
    char s_59212b5f[13];
    char s_f26b6cff[33];
+   char s_a63c824a[11];
    char s_a9f3b2c3[19];
    char s_0e7aca8a[17];
    char s_ab1afe7c[19];
@@ -5040,6 +5039,7 @@ static const struct
    "Pulsante Y (sinistro)",
    "Tasto %s",
    "Tipo di Mappatura controller tastiera",
+   "Tutti",
    "Tastiera %s",
    "Aux A Pistola",
    "Aux B Pistola",
@@ -5364,7 +5364,6 @@ static const struct
 #endif
 #endif
    "Mostra Percorsi Completi",
-   "Mostra 'Aiuto'",
    "Mostra 'Informazioni'",
    "Mostra 'Carica Contenuto'",
    "Notifica all'avvio di\"Carica Contenuto\"",
@@ -5968,7 +5967,6 @@ static const struct
    "Scala Intera",
    "Disattivato",
    "Cartella predefinita",
-   "File di configurazione",
    "Colore del Tema",
    "Mela Verde",
    "Blu Classico",
@@ -6418,6 +6416,8 @@ static const struct
    "Posizione Y delle notifiche su schermo",
    "Indice del monitor",
    "Abilita schermo intero sopra notch nei dispositivi Android e iOS",
+   "Sempre",
+   "Disattivato",
    "180 gradi",
    "270 gradi",
    "Normale",
@@ -6459,6 +6459,8 @@ static const struct
    "Ridimensiona",
    "Sincronizzazione tramite Scanline",
    "Simulazione di righe di scansione mobili",
+   "Orizzontale",
+   "Verticale",
    "Shader video",
    "Ritardo auto-shader",
    "Shaders video",
@@ -6492,7 +6494,6 @@ static const struct
    "Intervallo Scambio VSync",
    "Sincronizzazione audio",
    "Video",
-   "Video multithread",
    "Usa i buffer di argomenti Metal (richiede riavvio)",
    "Eliminazione flicker",
 #if defined(RARCH_MOBILE)
@@ -7067,7 +7068,6 @@ static const struct
    "Diminuisce il livello del volume dell'audio in uscita.",
    "Aumenta il livello del volume dell'audio in uscita.",
    "Attiva/disattiva la sincronizzazione con il contenuto esatto del fotogramma on/off.",
-   "Il mouse fisico riconosciuto da RetroArch.",
 #ifdef GEKKO
    "Regola la scala x/y per la velocit\303\240 della pistola leggera Wiimote.",
 #endif
@@ -7128,7 +7128,6 @@ static const struct
    "Combinazione pulsante controller per uscire da RetroArch.",
    "I remapppamenti dei comandi sono memorizzati in questa cartella.",
    "Sovrascrivi le connessioni in ingresso con le binds rimappate impostate per il core corrente.",
-   "Specifica quale porta principale ricever\303\240 input dalla porta del controller frontend %u.",
    "I Remap si applicheranno solo al gamepad attivo in cui sono stati salvati.",
    "Cambia come il RetroPad virtuale viene mappato su un dispositivo di input fisico. Se un disposit"
    "ivo di input \303\250 riconosciuto e auto-configurato correttamente, probabilmente gli utenti no"
@@ -7337,7 +7336,6 @@ static const struct
 #endif
    "Mostra percorsi completi per le impostazioni relative alle cartelle, anzich\303\251 solo il nome"
    " della cartella selezionata.",
-   "Mostra l'opzione 'Aiuto' nel menu principale.",
    "Mostra l'opzione 'Informazione' nel menu principale.",
    "Mostra l'opzione 'Carica contenuto' nel menu principale.",
    "Mostra una breve animazione di feedback di avvio durante il caricamento del contenuto.",
@@ -7750,7 +7748,6 @@ static const struct
    "elocit\303\240 del riavvolgimento.",
    "Modifica le impostazioni di riavvolgimento.",
    "Imposta la directory iniziale per l'esplorazione file.",
-   "Il file di configurazione predefinito \303\250 memorizzato in questa directory.",
    "Selezionare un tema di colore diverso. Scegliendo 'Personalizzato' si abilita l'uso di file pred"
    "efiniti tema menu.",
    "Selezionare una preimpostazione del tema del menu dall'esplorazione file.",
@@ -8515,6 +8512,7 @@ static const struct
    "Rilascia tasti e pulsanti!",
    "Input Trucco",
    "Immettere il nome del file cheat",
+   "Istantaneo",
    "Inserisci Password",
    "Password errata.",
    "Password corretta.",
@@ -8815,7 +8813,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_it_blob_check[
-      (sizeof(msg_hash_it_blob) == (183237u
+      (sizeof(msg_hash_it_blob) == (182987u
 #ifdef ANDROID
        + 376u
 #endif
@@ -10048,6 +10046,7 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_A,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_B,
@@ -10372,7 +10371,6 @@ static const uint32_t msg_hash_it_ids[] =
 #endif
 #endif
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_FULL_PATHS,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -10969,7 +10967,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_APPLE_GREEN,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_CLASSIC_BLUE,
@@ -11418,6 +11415,8 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED_ROTATED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_NORMAL,
@@ -11459,6 +11458,8 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCANLINE_SYNC,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DELAY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DIR,
@@ -11492,7 +11493,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SYNCHRONIZATION_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_TAB,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_THREADED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VFILTER,
 #if defined(RARCH_MOBILE)
@@ -11947,7 +11947,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_DOWN,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_UP,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VRR_RUNLOOP_TOGGLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_INDEX,
 #ifdef GEKKO
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_SCALE,
 #endif
@@ -11989,7 +11988,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_QUIT_GAMEPAD_COMBO,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_BINDS_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_PORT,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RETROPAD_BINDS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RUMBLE_GAIN,
@@ -12127,7 +12125,6 @@ static const uint32_t msg_hash_it_ids[] =
 #endif
 #endif
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_FULL_PATHS,
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -12409,7 +12406,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_GRANULARITY,
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_SUBLABEL_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_THEME_PRESET,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_SHOW_START_SCREEN,
@@ -13009,6 +13005,7 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MSG_INPUT_BIND_RELEASE,
    (uint32_t)MSG_INPUT_CHEAT,
    (uint32_t)MSG_INPUT_CHEAT_FILENAME,
+   (uint32_t)MSG_INPUT_COMBO_INSTANT,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_NOK,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_OK,

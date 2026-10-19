@@ -214,6 +214,11 @@ struct runloop
     * content rate is not holding anything. */
    retro_time_t pace_iter_last;
    retro_time_t pace_period_usec;
+   /* The frame the low-latency backend last released, for its input
+    * and simulation markers; 0 while it is not releasing. Identities
+    * come from driver_pacing_next_id and only ever grow. */
+   uint64_t     driver_pacing_frame_id;
+   uint64_t     driver_pacing_next_id;
    unsigned     pace;                           /* enum runloop_pace_source bits */
    /* Optional products with a per-frame hook in runloop_iterate().
     * Each bit is raised when its product comes up and dropped when it
@@ -245,12 +250,6 @@ struct runloop
    struct retro_core_t        current_core;     /* uint64_t alignment */
 #if defined(HAVE_RUNAHEAD)
    uint64_t runahead_last_frame_count;          /* uint64_t alignment */
-   /* Measured cost of one core step inside runahead_run() (a core
-    * run plus its share of the save/load), IIR-averaged in usec; 0
-    * until the first sample. runahead_count_used is the frame count
-    * actually run last frame after the budget gate clamped it. */
-   retro_time_t runahead_unit_usec;
-   int runahead_count_used;
 #if defined(HAVE_DYNAMIC) || defined(HAVE_DYLIB)
    struct retro_core_t secondary_core;          /* uint64_t alignment */
 #endif
@@ -265,7 +264,6 @@ struct runloop
     * per access, and a constructor/destructor function-pointer pair
     * for what amounts to alloc/free of a data buffer. */
    retro_ctx_serialize_info_t runahead_savestate_info;
-   my_list *input_state_list;
    preempt_t *preempt_data;
 #endif
 
@@ -375,6 +373,12 @@ struct runloop
       char xdelta   [PATH_MAX_LENGTH];
    } name;
 
+   /* Main-thread state for deferred automatic state loading. */
+   bool auto_state_load_pending;
+   bool auto_state_load_attempted;
+   bool auto_state_load_ready;
+   bool auto_state_load_core_ran;
+
    bool perfcnt_enable;
    bool paused_hotkey;
 
@@ -394,10 +398,20 @@ struct runloop
     * cross-thread race.  Both are main-thread only. */
    bool content_closing;
    bool content_switching;
+   /* quit_pending: a quit from the frame loop is waiting for a state
+    * task to finish writing (retroarch_main_quit_staged()).  The loop
+    * presents the last frame and runs nothing else until it is through.
+    * Main-thread only. */
+   bool quit_pending;
    /* The core running behind the menu was not due a frame this
     * iteration (see menu_core_due_ns), so nothing that counts the
     * core's frames - achievements - steps either. Main thread only. */
    bool menu_core_skipped;
+   /* The core uses a tracking headset: a tracked map was accepted or it
+    * asked for a pose. It is sampled before each run until it unloads. */
+#ifdef HAVE_OPENXR
+   bool core_vr_content;
+#endif
 };
 
 /* Frame pacing sources.
@@ -440,8 +454,18 @@ enum runloop_pace_source
     * core then runs on the timer's schedule, the handover measures a
     * full period of "core time", reserves all of it, and holds for
     * nothing - which is what happened, and read as "Pacing: Timer" with
-    * display pacing on. */
-   RUNLOOP_PACE_DISPLAY  = (1 << 6)
+    * display pacing on. With RUNLOOP_PACE_DRIVER beside it the release
+    * is the driver's sleep, at the content's period, and the hold
+    * stands aside. */
+   RUNLOOP_PACE_DISPLAY  = (1 << 6),
+   /* The video driver's low-latency backend (NVIDIA Reflex through
+    * VK_NV_low_latency2) owns the release of the next frame: the loop
+    * holds on the driver's own signal, before input is sampled, and
+    * the frame delay and the gap limiter's sleep stand aside for it.
+    * The timer's period, when the timer would otherwise hold, is
+    * handed to the backend as the minimum present interval instead of
+    * being slept here, so there is still one clock. */
+   RUNLOOP_PACE_DRIVER   = (1 << 7)
 };
 
 /* The pacing decisions the runloop makes every iteration, here
@@ -464,6 +488,52 @@ static INLINE retro_time_t runloop_content_frame_time_us(float core_hz)
    return period;
 }
 
+/* Whether the video driver presents with vsync blocking. Scanline
+ * Sync does its own waiting on the beam and runs the swap unsynced, so
+ * it and vsync never block together; a content rate vsync cannot hold
+ * (force_nonblock) and fast-forward (nonblocking) run unsynced too.
+ * Every place that hands the driver its blocking state asks this. */
+static INLINE bool runloop_vsync_blocks(bool vsync, bool scanline_sync,
+      bool force_nonblock, bool nonblocking)
+{
+   return vsync && !scanline_sync && !force_nonblock && !nonblocking;
+}
+
+/* One step of fast-forward's frameskip: whether the frame begun
+ * delta_us after the last one is presented, against a target period of
+ * presents. The first frame of a fast-forward only starts the clock, and
+ * a host that cannot keep up resets the backlog rather than carry it. */
+static INLINE bool runloop_ff_frameskip_step(int32_t *accumulator,
+      int8_t *active, uint16_t delta_us, uint16_t target_us)
+{
+   int32_t prev = *accumulator;
+   if (!*active)
+      *active = -1;
+   else if (*active < 0)
+      *active = 1;
+   if (*active > 0)
+      *accumulator += delta_us;
+   if (*accumulator < target_us)
+      return false;
+   *accumulator -= target_us;
+   /* Prevent external frame limiters from
+    * pushing fast forward ratio down to 1x */
+   if (prev - *accumulator >= delta_us)
+      *accumulator -= delta_us;
+   if (*accumulator < 0)
+      *accumulator = 0;
+   if (*accumulator > target_us)
+      *accumulator = 0;
+   return true;
+}
+
+/* Whether the core is asked not to render the frame: fast-forward drops
+ * it, and no real frame is owed from a turn that went to a dupe. */
+static INLINE bool runloop_ff_skips_render(bool skip, bool owed)
+{
+   return skip && !owed;
+}
+
 /* Whether the frame limiter should hold the loop to the display rate
  * because nothing else is: an empty pace record means no vsync, no
  * audio, no scanline lock, and no fast-forward limit to fall back on.
@@ -474,12 +544,14 @@ static INLINE retro_time_t runloop_content_frame_time_us(float core_hz)
  * than fighting it. Otherwise the content rate is what Sync to Exact
  * Content Framerate is for, and the loop runs unlimited as
  * configured. Never under fast-forward, where running unthrottled is
- * the point. */
+ * the point. The low-latency backend is not a clock: when it owns the
+ * release the timer's period goes to it as the minimum present
+ * interval, so it engages exactly as it would without it. */
 static INLINE bool runloop_pace_gap_engages(unsigned pace,
       bool nonblocking, bool fastmotion, bool scanline_sync,
       bool rate_control)
 {
-   return (pace == RUNLOOP_PACE_NONE)
+   return ((pace & ~RUNLOOP_PACE_DRIVER) == RUNLOOP_PACE_NONE)
       && !nonblocking && !fastmotion && (scanline_sync || rate_control);
 }
 
@@ -525,23 +597,34 @@ static INLINE retro_time_t runloop_pace_schedule(int64_t *anchor_ns,
    return 0;
 }
 
+/* The longest sleep overshoot the margin follows whatever the period:
+ * the coarsest timer a supported OS sleeps on, with headroom. */
+#define RUNLOOP_PACE_MARGIN_FLOOR_US 2000
+
 /* The gap limiter's sleep margin: how early the sleep is asked to
  * return, so the remainder can be spun to the deadline. It tracks the
  * sleep's observed overshoot - up at once, since one late sleep is a
  * frame late; down by a sixteenth a frame, so a single quiet sleep does
- * not unwind it - and never past a quarter of the period, so the spin
- * stays a fraction of the frame. */
+ * not unwind it. It is held to a quarter of the period, so the spin
+ * stays a fraction of the frame, except that it may follow the timer
+ * up to RUNLOOP_PACE_MARGIN_FLOOR_US, and at most a whole period: a
+ * period shorter than the OS can sleep - fast-forward at high ratios -
+ * is spun rather than slept past. */
 static INLINE retro_time_t runloop_pace_margin_update(retro_time_t margin,
       retro_time_t overshoot, retro_time_t period)
 {
+   retro_time_t cap = period / 4;
+   if (cap < RUNLOOP_PACE_MARGIN_FLOOR_US)
+      cap = (period < RUNLOOP_PACE_MARGIN_FLOOR_US)
+         ? period : RUNLOOP_PACE_MARGIN_FLOOR_US;
    if (overshoot < 0)
       overshoot = 0;
    if (overshoot > margin)
       margin = overshoot;
    else
       margin -= (margin - overshoot) / 16;
-   if (margin > period / 4)
-      margin = period / 4;
+   if (margin > cap)
+      margin = cap;
    return margin;
 }
 
@@ -676,7 +759,10 @@ enum runloop_pace_fact
    PACE_FACT_PRESENTABLE     = (1 << 15), /* the context has a surface */
    PACE_FACT_MENU_DISPLAY_RATE = (1 << 16),/* the menu is up at Menu Frame
                                              Rate 'Display Rate' */
-   PACE_FACT_FRAME_LIMIT     = (1 << 17)  /* frame_limit_minimum_time != 0 */
+   PACE_FACT_FRAME_LIMIT     = (1 << 17), /* frame_limit_minimum_time != 0 */
+   PACE_FACT_DRIVER_PACING   = (1 << 18), /* the driver's low-latency backend
+                                             is up and took the mode */
+   PACE_FACT_CORE_RAN        = (1 << 19)  /* this iteration ran the core */
 };
 
 typedef unsigned runloop_pace_facts_t;
@@ -692,6 +778,32 @@ typedef unsigned runloop_pace_facts_t;
  * which the caller applies after, because each has an effect beyond
  * the bits - the wait ends the iteration, the gap limiter sets the
  * period the timer sleeps to. */
+/* Whether the low-latency backend releases this iteration's successor:
+ * only a content frame the core produced, at normal speed, with the
+ * window focused and the menu down. Pause, the menu and fast-forward
+ * keep their existing pacing: a cached frame presented for them is
+ * not a frame the core made, and a sleep for it would be one too
+ * many. Under the threaded wrapper with display pacing on, the
+ * driver's sleep is the hold's release: the presenter's hold stands
+ * aside for a frame the driver released, and the content's period,
+ * which the hold kept, goes to the driver as its minimum interval -
+ * one owner, one cadence. Scanline Sync paces the present to a
+ * scanline, a release of its own. Vsync and audio may still hold
+ * inside their own subsystems; the backend schedules the start of
+ * the frame, not its presentation. */
+static INLINE bool runloop_pace_driver_owns(runloop_pace_facts_t f,
+      unsigned pace)
+{
+   return    (f & PACE_FACT_DRIVER_PACING)
+          && (f & PACE_FACT_CORE_RAN)
+          && (f & PACE_FACT_FOCUSED)
+          && !(f & PACE_FACT_NONBLOCKING)
+          && !(f & PACE_FACT_FASTMOTION)
+          && !(f & PACE_FACT_PAUSED)
+          && !(f & PACE_FACT_MENU_ALIVE)
+          && !(pace & RUNLOOP_PACE_SCANLINE);
+}
+
 static INLINE unsigned runloop_pace_sources(runloop_pace_facts_t f)
 {
    unsigned pace = RUNLOOP_PACE_NONE;
@@ -728,12 +840,15 @@ static INLINE unsigned runloop_pace_sources(runloop_pace_facts_t f)
                     && !display_paces)
                 || (!display_paces && !menu_content
                     && (f & PACE_FACT_MENU_ALIVE)
-                    && (   !(f & PACE_FACT_VSYNC) || !(f & PACE_FACT_FOCUSED)
+                    && (   !(f & (PACE_FACT_VSYNC | PACE_FACT_SCANLINE_SYNC))
+                        || !(f & PACE_FACT_FOCUSED)
                         || (   (f & PACE_FACT_MENU_DISPLAY_RATE)
                             && (f & PACE_FACT_WRAPPER))))
                 || (!display_paces && (f & PACE_FACT_PAUSED))))
          pace |= RUNLOOP_PACE_TIMER;
    }
+   if (runloop_pace_driver_owns(f, pace))
+      pace |= RUNLOOP_PACE_DRIVER;
    return pace;
 }
 
@@ -773,7 +888,10 @@ enum runloop_frame_work
    RUNLOOP_WORK_PRESENCE = (1 << 1),  /* a rich-presence sink is up */
    RUNLOOP_WORK_CHEATS   = (1 << 2),  /* a cheat list is loaded */
    RUNLOOP_WORK_CAMERA   = (1 << 3),  /* the core started the camera */
-   RUNLOOP_WORK_CHEEVOS  = (1 << 4)   /* achievements attached to content */
+   RUNLOOP_WORK_CHEEVOS  = (1 << 4),  /* achievements attached to content */
+   RUNLOOP_WORK_RUN_FRAMES = (1 << 5), /* RUN_FRAMES is advancing frames */
+   RUNLOOP_WORK_PAUSE_LOADED = (1 << 6), /* pause once the content has run */
+   RUNLOOP_WORK_FREE_FRAME = (1 << 7) /* a frame with no job to tell of */
 };
 
 /* Raise or drop one frame_work bit from the product that owns it.
@@ -897,6 +1015,10 @@ void runloop_pause_checks(void);
  * say what paces it where the overlay does not draw. */
 size_t runloop_pace_string(char *s, size_t len);
 
+/* The low-latency release's requested mode and why it is or is not in
+ * effect, for the statistics overlay and System Information. */
+size_t runloop_driver_pacing_string(char *s, size_t len);
+
 void runloop_set_frame_limit(
       const struct retro_system_av_info *av_info,
       float fastforward_ratio);
@@ -952,6 +1074,21 @@ void runloop_path_set_basename(const char *path);
 void runloop_path_set_names(void);
 
 uint32_t runloop_get_flags(void);
+
+bool runloop_set_fastmotion(bool enabled);
+
+bool runloop_set_slowmotion(bool enabled);
+
+/* The platform has taken the application away, or given it back:
+ * paused and idle while it is away. */
+void runloop_set_platform_paused(bool paused);
+
+/* Whether a core has content loaded. */
+bool runloop_content_loaded(void);
+
+/* Whether the keyboard callback in place is the frontend's own, which
+ * is the one a replay feeds its recorded keys to. */
+bool runloop_key_event_is_frontend(void);
 
 bool runloop_get_entry_state_path(char *path, size_t len, int slot);
 

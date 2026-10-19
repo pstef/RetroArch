@@ -70,6 +70,8 @@ struct rm_mode
 typedef struct
 {
    GSTEXTURE *texture;
+   /* The texture manager the texture was bound in */
+   GSGLOBAL *gsGlobal;
    const font_renderer_driver_t* font_driver;
    void* font_data;
    struct font_atlas* atlas;
@@ -132,6 +134,8 @@ static int vsync_sema_id;
 /*
  * FONT DRIVER
  */
+static void ps2_font_free(void* data, bool is_threaded);
+
 static void* ps2_font_init(void* data, const char* font_path,
       float font_size, bool is_threaded)
 {
@@ -144,6 +148,7 @@ static void* ps2_font_init(void* data, const char* font_path,
 
    if (!font)
       return NULL;
+   font->gsGlobal = data ? ((ps2_video_t*)data)->gsGlobal : NULL;
 
    if (!font_renderer_create_default(
             &font->font_driver,
@@ -156,6 +161,8 @@ static void* ps2_font_init(void* data, const char* font_path,
    atlas                  = font->font_driver->get_atlas(font->font_data);
    font->atlas            = atlas;
    font->texture          = (GSTEXTURE*)calloc(1, sizeof(GSTEXTURE));
+   if (!font->texture)
+      goto error;
    font->texture->Width   = atlas->width;
    font->texture->Height  = atlas->height;
    font->texture->PSM     = GS_PSM_T8;
@@ -165,6 +172,8 @@ static void* ps2_font_init(void* data, const char* font_path,
    /* Convert to 8bit texture */
    text_size           = gsKit_texture_size_ee(atlas->width, atlas->height, GS_PSM_T8);
    tex8                = (uint8_t*)malloc(text_size);
+   if (!tex8)
+      goto error;
    for (j = 0; j <  atlas->width * atlas->height; j++ )
       tex8[j]          = atlas->buffer[j] & 0x000000FF;
    font->texture->Mem  = (u32 *)tex8;
@@ -172,6 +181,8 @@ static void* ps2_font_init(void* data, const char* font_path,
    /* Create 8bit CLUT */
    clut_size           = gsKit_texture_size_ee(16, 16, GS_PSM_CT32);
    clut32              = (uint32_t*)malloc(clut_size);
+   if (!clut32)
+      goto error;
    for (j = 0; j < 256; j++)
       clut32[j]        = 0x01010101 * j;
    font->texture->Clut = (u32 *)clut32;
@@ -179,10 +190,13 @@ static void* ps2_font_init(void* data, const char* font_path,
    /* The atlas may grow, kept small for the GS's 4 MB: the EE copy is
     * made again at its size and the texture sent again, as the menu
     * texture is when its size changes */
-   atlas->max_width    = 512;
-   atlas->max_height   = 512;
+   atlas->max_dims = VIDEO_SCALE_PACK(512, 512);
 
    return font;
+
+error:
+   ps2_font_free(font, is_threaded);
+   return NULL;
 }
 
 static void ps2_font_free(void* data, bool is_threaded)
@@ -195,14 +209,16 @@ static void ps2_font_free(void* data, bool is_threaded)
    if (font->font_driver && font->font_data)
       font->font_driver->free(font->font_data);
 
-   if (font->texture->Clut)
-      free(font->texture->Clut);
-
-   if (font->texture->Mem)
-      free(font->texture->Mem);
-
    if (font->texture)
+   {
+      /* Out of the texture manager first: it finds a resident texture
+       * by its address, which the next texture allocated may reuse */
+      gsKit_TexManager_free(font->gsGlobal, font->texture);
+      free(font->texture->Clut);
+      free(font->texture->Mem);
       free(font->texture);
+   }
+   free(font);
 }
 
 static int ps2_font_get_message_width(void *data, const char *msg,
@@ -262,10 +278,10 @@ static void ps2_font_render_message(
       float x1, y1, u1, v1, x2, y2, u2, v2; \
       int off_x   = (glyph)->draw_offset_x; \
       int off_y   = (glyph)->draw_offset_y; \
-      int tex_x   = (glyph)->atlas_offset_x; \
-      int tex_y   = (glyph)->atlas_offset_y; \
-      int g_w     = (glyph)->width; \
-      int g_h     = (glyph)->height; \
+      int tex_x   = VIDEO_SCALE_W((glyph)->atlas_pos); \
+      int tex_y   = VIDEO_SCALE_H((glyph)->atlas_pos); \
+      int g_w     = VIDEO_SCALE_W((glyph)->dims); \
+      int g_h     = VIDEO_SCALE_H((glyph)->dims); \
       int delta_x = (pen_x); \
       int delta_y = (pen_y); \
       /* The -0.5 is needed to achieve pixel perfect. \
@@ -363,10 +379,10 @@ static void ps2_font_render_msg(
       unsigned j;
       uint8_t *tex8              = (uint8_t*)font->texture->Mem;
       const struct font_atlas *a = font->atlas;
-      unsigned x0                = a->dirty_x0;
-      unsigned y0                = a->dirty_y0;
-      unsigned x1                = a->dirty_x1;
-      unsigned y1                = a->dirty_y1;
+      unsigned x0                = VIDEO_SCALE_W(a->dirty_xy0);
+      unsigned y0                = VIDEO_SCALE_H(a->dirty_xy0);
+      unsigned x1                = VIDEO_SCALE_W(a->dirty_xy1);
+      unsigned y1                = VIDEO_SCALE_H(a->dirty_xy1);
 
       if (x1 <= x0 || y1 <= y0 || x1 > a->width || y1 > a->height)
       {
@@ -747,13 +763,10 @@ static void setupScalingMode(ps2_video_t *ps2, int iWidth, int iHeight, float fD
        gsGlobal->DH - 1);
 }
 
-static void *ps2_init(const video_info_t *video,
-      input_driver_t **input, void **input_data)
+static void *ps2_init(const video_info_t *video)
 {
-   void *ps2input   = NULL;
    ps2_video_t *ps2 = (ps2_video_t *)calloc(1, sizeof(ps2_video_t));
 
-   *input_data      = NULL;
 
    if (!ps2)
       return NULL;
@@ -765,14 +778,9 @@ static void *ps2_init(const video_info_t *video,
    ps2->force_aspect = video->force_aspect;
    ps2->vsync        = video->vsync;
 
-   if (input && input_data)
-   {
-      settings_t *settings = config_get_ptr();
-      ps2input = input_driver_init_wrap(&input_ps2,
-                                        settings->arrays.input_joypad_driver);
-      *input = ps2input ? &input_ps2 : NULL;
-      *input_data = ps2input;
-   }
+   /* no input driver of this driver's own: the frontend starts the
+    * platform's */
+   input_driver_video_window(INPUT_WINDOW_PLATFORM, NULL);
 
    return ps2;
 }

@@ -363,6 +363,22 @@ static void input_autoconfigure_set_config_file(
             entry->value,
             sizeof(autoconfig_handle->device_info.display_name));
 
+   /* The controller's own deadzones, if the profile has them: the
+    * same keys as the global settings */
+   {
+      static const char *const dz_keys[2] = {
+         "input_analog_deadzone", "input_analog_trigger_deadzone" };
+      unsigned k;
+      for (k = 0; k < 2; k++)
+      {
+         float v;
+         autoconfig_handle->device_info.deadzone[k] = 0;
+         if (config_get_float(config, dz_keys[k], &v) && v >= 0.0f)
+            autoconfig_handle->device_info.deadzone[k] =
+               (uint8_t)((v > 0.95f ? 0.95f : v) * 100.0f + 0.5f) + 1;
+      }
+   }
+
    /* Set auto-configured status to 'true' */
    autoconfig_handle->device_info.autoconfigured = true;
 }
@@ -1437,6 +1453,13 @@ static void cb_input_autoconfigure_connect(
    input_config_set_device_vid(port, autoconfig_handle->device_info.vid);
    input_config_set_device_pid(port, autoconfig_handle->device_info.pid);
 
+   /* > The controller's own deadzones: none where its profile has none */
+   input_config_set_device_deadzones(port,
+         autoconfig_handle->device_info.deadzone[0]
+            ? (float)(autoconfig_handle->device_info.deadzone[0] - 1) * 0.01f : -1.0f,
+         autoconfig_handle->device_info.deadzone[1]
+            ? (float)(autoconfig_handle->device_info.deadzone[1] - 1) * 0.01f : -1.0f);
+
    if (*autoconfig_handle->device_info.config_name)
       input_config_set_device_config_name(port,
             autoconfig_handle->device_info.config_name);
@@ -1479,6 +1502,8 @@ static void cb_input_autoconfigure_connect(
          autoconfig_handle->device_info.pid,
          autoconfig_handle->device_info.name,
          autoconfig_handle->device_info.display_name);
+   /* the ports may have changed controllers: their deadzones with them */
+   input_driver_deadzones_refresh();
 
    /* The registry learns of the controller here, where the connect
     * is applied, so it changes with the device table and on the main
@@ -1557,7 +1582,14 @@ static void input_autoconfigure_connect_handler(retro_task_t *task)
          fallback_device_name = "Standard Gamepad";
       else if (string_is_equal(autoconfig_handle->device_info.joypad_driver,
             "sdl3"))
-         fallback_device_name = "Gamepad";
+      {
+         /* a PS3 controller: the same, and its pressure axes */
+         if (     autoconfig_handle->device_info.vid == 0x054c
+               && autoconfig_handle->device_info.pid == 0x0268)
+            fallback_device_name = "SDL3 PS3 Gamepad";
+         else
+            fallback_device_name = "Gamepad";
+      }
 #ifdef HAVE_TEST_DRIVERS
       else if (string_is_equal(autoconfig_handle->device_info.joypad_driver,
             "test"))
@@ -1687,7 +1719,7 @@ static bool autoconfigure_port_finder(retro_task_t *task, void *user_data)
    return false;
 }
 
-#ifdef HAVE_TEST_DRIVERS
+#if defined(HAVE_TEST_DRIVERS) || defined(HAVE_OPENXR)
 static bool autoconfigure_any_finder(retro_task_t *task, void *user_data)
 {
    return task
@@ -1699,7 +1731,8 @@ static bool autoconfigure_any_finder(retro_task_t *task, void *user_data)
  * task_queue_find() reports a task until its callback has run, so
  * 'false' means every port's device table is what the driver last
  * reported.  For the test joypad driver, whose scripted steps run on
- * a frame count that the task queue does not follow. */
+ * a frame count that the task queue does not follow, and the headset's
+ * controllers, which take a slot no driver has reported. */
 bool input_autoconfigure_pending(void)
 {
    task_finder_data_t find_data;
@@ -1972,6 +2005,7 @@ static void cb_input_autoconfigure_disconnect(
     * callback, to ensure it occurs on the main thread */
    input_config_clear_device_name(port);
    input_config_clear_device_display_name(port);
+   input_config_set_device_deadzones(port, -1.0f, -1.0f);
    input_config_clear_device_config_name(port);
    input_config_clear_device_joypad_driver(port);
    input_config_set_device_phys(port, NULL);
@@ -2036,7 +2070,6 @@ bool input_autoconfigure_disconnect(unsigned port, const char *name)
    retro_task_t *task                     = NULL;
    autoconfig_handle_t *autoconfig_handle = NULL;
    settings_t *settings                   = config_get_ptr();
-   input_driver_state_t *input_st         = input_state_get_ptr();
    bool notification_show_autoconfig      = settings ? settings->bools.notification_show_autoconfig : true;
    bool pause_on_disconnect               = settings ? settings->bools.pause_on_disconnect : true;
    bool menu_pause_libretro               = settings ? settings->bools.menu_pause_libretro : false;
@@ -2069,9 +2102,9 @@ bool input_autoconfigure_disconnect(unsigned port, const char *name)
 
    /* Use display_name as name instead since autoconfig display_name
     * is destroyed already, and real name does not matter at this point */
-   if (input_st && *input_st->input_device_info[port].display_name)
+   if (input_config_get_device_display_name(port))
       strlcpy(autoconfig_handle->device_info.name,
-            input_st->input_device_info[port].display_name,
+            input_config_get_device_display_name(port),
             sizeof(autoconfig_handle->device_info.name));
    else if (name && *name)
       strlcpy(autoconfig_handle->device_info.name,

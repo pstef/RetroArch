@@ -89,14 +89,12 @@ static void scripted_poll(void *data)
 static int16_t scripted_input_state(
       void *data,
       const input_device_driver_t *joypad,
-      const input_device_driver_t *sec_joypad,
       rarch_joypad_info_t *joypad_info,
       const retro_keybind_set *binds,
-      bool keyboard_mapping_blocked,
       unsigned port, unsigned device, unsigned idx, unsigned id)
 {
-   (void)data; (void)joypad; (void)sec_joypad; (void)joypad_info;
-   (void)binds; (void)keyboard_mapping_blocked; (void)idx;
+   (void)data; (void)joypad; (void)joypad_info;
+   (void)binds; (void)idx;
 
    if (port != 0)
       return 0;
@@ -231,7 +229,7 @@ static bool point_at(unsigned entry)
       held.y = (int16_t)y;
       frames(2);
       if (     pointed_entry() == entry
-            && menu_state_get_ptr()->input_state.pointer.y == (int16_t)y)
+            && VIDEO_POS_Y(menu_state_get_ptr()->input_state.pointer.pos) == (int16_t)y)
       {
          /* A row is several pixels tall: stop a little inside it. */
          held.y = (int16_t)(y + 2);

@@ -118,6 +118,16 @@ typedef struct audio_mixer_stream_params
 } audio_mixer_stream_params_t;
 #endif
 
+/* What a driver's own device thread was scheduled under */
+enum audio_thread_grant
+{
+   AUDIO_THREAD_GRANT_NONE = 0, /* no such thread */
+   AUDIO_THREAD_GRANT_NORMAL,   /* not raised */
+   AUDIO_THREAD_GRANT_REFUSED,  /* asked, refused */
+   AUDIO_THREAD_GRANT_RAISED,   /* a higher priority */
+   AUDIO_THREAD_GRANT_MMCSS     /* the MMCSS Pro Audio class */
+};
+
 typedef struct audio_driver
 {
    /* Creates and initializes handle to audio driver.
@@ -409,6 +419,28 @@ typedef struct audio_driver
     * shifts every driver's initialiser by one and the compiler will
     * not always say so; that has broken the Android build before. */
    bool (*device_clock_ppm)(void *data, double *ppm);
+
+   /* What the driver's own device thread was scheduled under, for the
+    * statistics overlay; read from any thread. NULL where a driver
+    * runs no thread of its own. */
+   enum audio_thread_grant (*thread_grant)(void *data);
+
+   /* Optional pair, for a driver whose write() front is a buffer the
+    * frontend can produce into directly. write_begin lends the
+    * contiguous writable span at that buffer's head - up to len bytes
+    * of the driver's output format, possibly fewer, 0 when nothing is
+    * free or the driver cannot lend right now - without blocking and
+    * without publishing anything. The span is the frontend's until
+    * the matching write_end, which publishes its first len bytes (0
+    * abandons the lend) and returns them. At most one lend may be
+    * outstanding, and write() must not be called between the two.
+    * The threaded pipeline takes the pair after wait_writable() has
+    * reported the room, so the resampler and the format conversion
+    * land their output in the driver's own buffer instead of being
+    * copied into it; a driver without a lendable front leaves both
+    * NULL and keeps the copy inside write(). */
+   size_t  (*write_begin)(void *data, size_t len, void **region);
+   ssize_t (*write_end)(void *data, size_t len);
 } audio_driver_t;
 
 /* What a driver's device-clock word holds until it has an estimate.
@@ -451,6 +483,7 @@ typedef struct
 
    uint64_t free_samples_count;
 
+   struct audio_record_source *record_source;
    struct string_list *devices_list;
    /* The driver whose device_list_new built devices_list, so that its
     * device_list_free is the one that releases it - not whichever
@@ -640,8 +673,8 @@ typedef struct
     * wide, a slot per speaker bit, the ones the batch lacks zero. A
     * fixed width, so the ring is never switched under the consumer;
     * layout boundaries travel through pipe_layouts before audio publication.
-    * pipe_wide is the consumer's bounce for a pass of the
-    * frame. Producers construct frames directly in writable ring spans. */
+    * Producers construct frames directly in writable ring spans, and
+    * the consumer renders them where they lie. */
    unsigned pipe_channels;
    unsigned pipe_layout; /* producer-only requested layout */
    /* The output rate setting as of the driver's init - what the device
@@ -650,8 +683,6 @@ typedef struct
     * here rather than read from settings there; a changed setting
     * reaches it through the reinit that makes it real. */
    unsigned out_rate;
-   uint8_t *pipe_wide;
-   size_t   pipe_wide_bytes;
    bool     core_multi;   /* the multi-channel entry was negotiated */
    /* Whether the ring carries float frames - the core negotiated float
     * output - or int16. Decided before any audio flows: at pipe init
@@ -691,6 +722,9 @@ typedef struct
     * pipe's target then, not just a frame. Consumer thread only after
     * init. */
    bool     pipe_priming;
+   /* Main thread: the publish waited for room since the last
+    * audio_driver_publish_runloop(), which takes it into the snapshot */
+   bool     writer_held;
    /* How the consumer fared against the core after priming, said once
     * at teardown beside the driver's silence count: the passes that
     * found the pipe short and had to wait for the core, the longest
@@ -987,6 +1021,7 @@ typedef struct
    const uint8_t *pipe_pending;
    size_t pipe_pending_bytes;
    void (*resampler_int16_reset)(void *);
+   void *(*resampler_int16_sibling)(void *);
 #ifdef HAVE_THREADS
    struct audio_pipeline_stretch *pipe_transport;
    void *pipe_transport_output;
@@ -1222,7 +1257,17 @@ enum audio_runloop_snapshot_bits
    AUDIO_SNAP_FF_SPEEDUP  = (1 << 7),
    AUDIO_SNAP_SINK_EST    = (1 << 8),
    AUDIO_SNAP_FASTPATH_S16 = (1 << 9),
-   AUDIO_SNAP_STRETCH_LPF = (1 << 10)
+   AUDIO_SNAP_STRETCH_LPF = (1 << 10),
+   /* audio_pipeline_fill_cap: see audio_driver_pipe_cap_frames() */
+   AUDIO_SNAP_PIPE_CAP    = (1 << 11),
+   /* The last iteration's pace had a display source: vsync, Scanline
+    * Sync or the display pacing hold */
+   AUDIO_SNAP_DISPLAY_PACED = (1 << 12),
+   /* The last iteration was held by audio alone, and the threaded
+    * pipeline's publish waited for room in it: see
+    * audio_driver_compute_rate_adjust() */
+   AUDIO_SNAP_AUDIO_PACED   = (1 << 13),
+   AUDIO_SNAP_WRITER_HELD   = (1 << 14)
 };
 
 /**
@@ -1438,6 +1483,7 @@ extern audio_driver_t audio_tinyalsa;
 extern audio_driver_t audio_roar;
 extern audio_driver_t audio_openal;
 extern audio_driver_t audio_opensl;
+extern audio_driver_t audio_aaudio;
 extern audio_driver_t audio_jack;
 extern audio_driver_t audio_sdl1;
 extern audio_driver_t audio_sdl2;
@@ -1446,6 +1492,7 @@ extern audio_driver_t audio_xa;
 extern audio_driver_t audio_pulse;
 extern audio_driver_t audio_pipewire;
 extern audio_driver_t audio_dsound;
+extern audio_driver_t audio_waveout;
 extern audio_driver_t audio_wasapi;
 extern audio_driver_t audio_wdmks;
 #ifdef HAVE_ASIO
@@ -1518,6 +1565,8 @@ void audio_driver_set_float_gate(audio_driver_float_gate_t gate);
  * was initialised, where the driver counts them; 0 otherwise. */
 size_t audio_driver_get_underruns(void);
 
+enum audio_thread_grant audio_driver_get_thread_grant(void);
+
 /* Whether a driver has asked to be reinitialised since the last call;
  * clears the request. The runloop calls this once a frame, on the main
  * thread, holding no audio lock, and acts on it there: the reinit
@@ -1547,6 +1596,10 @@ double audio_driver_get_sink_alt_ppm(void);
 bool audio_driver_get_device_clock_ppm(double *ppm);
 
 extern audio_driver_t *audio_drivers[];
+
+/* Takes a driver the platform turns out not to have out of
+ * audio_drivers[], before the configuration or the menu reads it. */
+void audio_driver_list_remove(const audio_driver_t *drv);
 
 RETRO_END_DECLS
 

@@ -15,6 +15,7 @@
 #ifndef _INPUT_OUTPUT_STORE_H
 #define _INPUT_OUTPUT_STORE_H
 
+#include <stdint.h>
 #include <boolean.h>
 #include <retro_inline.h>
 #include <retro_atomic.h>
@@ -39,62 +40,47 @@
  * written once that frame - drivers whose effects run out rely on a
  * core repeating itself. Nothing is written for an output nobody set.
  *
- * Posting is safe from any thread: some cores make these calls from a
- * thread of their own. Taking is for one thread, the one that owns the
- * drivers. A poster stores the value, marks the slot, then bumps a
- * counter; the taker compares the counter with the value it saw last
- * and, if it moved, empties the marked slots. The counter is only ever
- * written by posters, so a take that reads a poster's bump is ordered
- * after that poster's mark and finds it, and a bump the take did not
- * read brings the next take back. A post is never lost and never
- * written twice; when two posts to one slot race, the later value is
- * the one written.
+ * A 16-bit value and its pending bit share one atomic word. A take
+ * exchanges that word with zero, so a racing post belongs entirely
+ * to this take or the next. Taking is for one thread; posting is safe
+ * from any thread. Values cover rumble strength and boolean LEDs.
  *
  * No driver, settings or libretro types, so that
  * samples/input/output_store can build it on its own. */
 
 #define OUTPUT_STORE_SLOTS 32
 
+#ifndef OUTPUT_STORE_AFTER_CLAIM
+#define OUTPUT_STORE_AFTER_CLAIM(st) ((void)0)
+#endif
+
+#ifndef OUTPUT_STORE_AFTER_TAKE
+#define OUTPUT_STORE_AFTER_TAKE(st, slot) ((void)0)
+#endif
+
 typedef struct
 {
-   retro_atomic_int_t value[OUTPUT_STORE_SLOTS];
-   retro_atomic_int_t posted[OUTPUT_STORE_SLOTS];
-   retro_atomic_int_t posts;   /* bumped by every post */
-   retro_atomic_int_t used;    /* slots at or past this were never posted */
-   int                seen;    /* the taker's: posts at its last take */
+   retro_atomic_int_t pending[OUTPUT_STORE_SLOTS];
+   retro_atomic_int_t posted;  /* slots to visit on the next take */
 } output_store_t;
 
 /* Any thread. @slot must be below OUTPUT_STORE_SLOTS. */
 static INLINE void output_store_post(output_store_t *st,
-      unsigned slot, int value)
+      unsigned slot, uint16_t value)
 {
-   int used;
-
    if (slot >= OUTPUT_STORE_SLOTS)
       return;
 
-   retro_atomic_store_release_int(&st->value[slot], value);
-   retro_atomic_store_release_int(&st->posted[slot], 1);
+   retro_atomic_store_release_int(&st->pending[slot], 0x10000 | value);
 
-   /* Only ever grows, so the taker need not look at slots no caller
-    * has used: a pad on port 1 costs two slots a take, not thirty-two. */
-   for (;;)
-   {
-      used = retro_atomic_load_acquire_int(&st->used);
-      if ((unsigned)used > slot)
-         break;
-      if (retro_atomic_cas_int(&st->used, used, (int)slot + 1))
-         break;
-   }
-
-   retro_atomic_fetch_add_int(&st->posts, 1);
+   retro_atomic_fetch_or_int(&st->posted, (int)(1u << slot));
 }
 
 /* The owning thread. Whether a take would find anything. One load and
  * a compare: what the frame pays when no core is using the output. */
 static INLINE bool output_store_pending(output_store_t *st)
 {
-   return retro_atomic_load_acquire_int(&st->posts) != st->seen;
+   return retro_atomic_load_acquire_int(&st->posted) != 0;
 }
 
 /* The owning thread. Calls @write for every slot posted since the last
@@ -104,24 +90,27 @@ static INLINE unsigned output_store_take(output_store_t *st,
       void (*write)(unsigned slot, int value, void *userdata),
       void *userdata)
 {
-   unsigned slot, used;
+   unsigned slot;
    unsigned written = 0;
-   int      posts   = retro_atomic_load_acquire_int(&st->posts);
+   uint32_t posted;
 
-   if (posts == st->seen)
+   if (!output_store_pending(st))
       return 0;
-   st->seen = posts;
+   posted = (uint32_t)retro_atomic_exchange_int(&st->posted, 0);
+   OUTPUT_STORE_AFTER_CLAIM(st);
 
-   used = (unsigned)retro_atomic_load_acquire_int(&st->used);
-   if (used > OUTPUT_STORE_SLOTS)
-      used = OUTPUT_STORE_SLOTS;
-
-   for (slot = 0; slot < used; slot++)
+   for (slot = 0; posted; slot++, posted >>= 1)
    {
-      if (retro_atomic_exchange_int(&st->posted[slot], 0))
+      int pending;
+      if (!(posted & 1u))
+         continue;
+      /* A racing post may leave another notification for this slot;
+       * its pending word prevents delivering a consumed value twice. */
+      pending = retro_atomic_exchange_int(&st->pending[slot], 0);
+      if (pending)
       {
-         write(slot, retro_atomic_load_acquire_int(&st->value[slot]),
-               userdata);
+         OUTPUT_STORE_AFTER_TAKE(st, slot);
+         write(slot, pending & 0xffff, userdata);
          written++;
       }
    }
@@ -135,9 +124,9 @@ static INLINE void output_store_drop(output_store_t *st)
 {
    unsigned slot;
 
-   st->seen = retro_atomic_load_acquire_int(&st->posts);
+   retro_atomic_exchange_int(&st->posted, 0);
    for (slot = 0; slot < OUTPUT_STORE_SLOTS; slot++)
-      retro_atomic_store_release_int(&st->posted[slot], 0);
+      retro_atomic_exchange_int(&st->pending[slot], 0);
 }
 
 #endif

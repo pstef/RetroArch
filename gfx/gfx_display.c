@@ -27,14 +27,9 @@
 #endif
 
 #include "../configuration.h"
-#include "../tasks/tasks_internal.h"
 #include "../verbosity.h"
 
 #include "../input/input_osk.h"
-#include "gfx_surface.h"
-#ifdef HAVE_THREADS
-#include <queues/task_queue.h>
-#endif
 
 /* Standard reference DPI value, used when determining
  * DPI-aware scaling factors */
@@ -43,9 +38,6 @@
 /* 'OZONE_SIDEBAR_WIDTH' must be kept in sync
  * with Ozone driver metrics */
 #define OZONE_SIDEBAR_WIDTH 408
-
-/* Small 1x1 white texture used for blending purposes */
-static uintptr_t gfx_white_texture;
 
 /* ptr alignment */
 static gfx_display_t dispgfx_st = {0};
@@ -340,7 +332,7 @@ static void gfx_display_flush_as(gfx_display_t *p_disp,
       enum gfx_display_flush_reason reason)
 {
    if (p_disp && p_disp->batch_quads)
-      p_disp->stats.v[GFX_DISPLAY_STAT_FLUSH + reason]++;
+      p_disp->stats.v[GFX_DISPLAY_STAT_FLUSH_IDX(reason)]++;
    gfx_display_flush_impl(p_disp);
 }
 
@@ -547,10 +539,9 @@ void gfx_display_draw_bg(
    draw->scale_factor                = 1.0f;
    draw->rotation                    = 0.0f;
 
+   /* A quad with no texture is a solid colour to the display driver */
    if (draw->texture)
       add_opacity_to_wallpaper       = true;
-   else
-      draw->texture                  = gfx_white_texture;
 
    if (add_opacity_to_wallpaper)
       gfx_display_set_alpha(draw->color, override_opacity);
@@ -984,8 +975,8 @@ static void gfx_display_mesh_draw_cpu(gfx_display_t *p_disp,
    draw.pos             = VIDEO_POS_PACK(0, 0);
    draw.dims            = video_dims;
    draw.matrix_data     = NULL;
-   draw.texture         = (md->program == GFX_MESH_PROGRAM_TEXTURED && md->texture)
-      ? md->texture : gfx_white_texture;
+   draw.texture         = (md->program == GFX_MESH_PROGRAM_TEXTURED)
+      ? md->texture : 0;
    draw.pipeline_id     = 0;
    draw.scale_factor    = 1.0f;
    draw.rotation        = 0.0f;
@@ -1024,8 +1015,8 @@ void gfx_display_mesh_draw(gfx_display_t *p_disp, void *userdata,
          0.5f, 0.5f, 0.0f, 1.0f };
       float mvp[16];
       float tint[4];
-      uintptr_t texture = (md->program == GFX_MESH_PROGRAM_TEXTURED
-            && md->texture) ? md->texture : gfx_white_texture;
+      uintptr_t texture = (md->program == GFX_MESH_PROGRAM_TEXTURED)
+            ? md->texture : 0;
       unsigned r, c, k;
       for (k = 0; k < 4; k++)
          tint[k] = md->color ? md->color[k] : 1.0f;
@@ -1053,7 +1044,7 @@ void gfx_display_mesh_draw(gfx_display_t *p_disp, void *userdata,
 void gfx_display_flush_batch(gfx_display_t *p_disp)
 {
    if (p_disp && p_disp->batch_quads)
-      p_disp->stats.v[GFX_DISPLAY_STAT_FLUSH + GFX_DISPLAY_FLUSH_EXPLICIT]++;
+      p_disp->stats.v[GFX_DISPLAY_STAT_FLUSH_IDX(GFX_DISPLAY_FLUSH_EXPLICIT)]++;
    gfx_display_flush_impl(p_disp);
 }
 
@@ -1153,9 +1144,7 @@ void gfx_display_draw_quad(
    draw.dims            = dims;
    draw.coords          = &coords;
    draw.matrix_data     = NULL;
-   draw.texture         = (texture && *texture)
-      ? *texture
-      : gfx_white_texture;
+   draw.texture         = texture ? *texture : 0;
    draw.pipeline_id     = 0;
    draw.scale_factor    = 1.0f;
    draw.rotation        = 0.0f;
@@ -1610,256 +1599,6 @@ void gfx_display_draw_keyboard(
    }
 }
 
-/* ---- Still images through a surface, for callers that own the handle
- *
- * Under threaded video a plain texture load is a round trip: the main
- * thread posts it and waits for the video thread's reply, and a theme's
- * icons are dozens of them. On the main thread with the wrapper running
- * the load is a surface submit instead, queued, and the handle is
- * written into the caller's slot when the upload completes - the caller
- * owns the texture as before. A slot reset or freed while its load is
- * in flight is cancelled first (gfx_display_texture_loads_cancel), and
- * the completion then unloads the texture rather than write it. Without
- * the wrapper, off the main thread, and for an image the plain load
- * treats specially (compressed, 10-bit), nothing changes. */
-#ifdef HAVE_THREADS
-typedef struct gfx_display_tex_load
-{
-   struct gfx_display_tex_load *next;
-   uintptr_t                   *item;
-   /* The pixels, until the upload has read them */
-   struct texture_image         img;
-   /* img.pixels are freed at the completion; false for a borrowed
-    * buffer that outlives the load */
-   bool                         owned;
-   bool                         cancelled;
-} gfx_display_tex_load_t;
-
-/* Main thread only, as surface submits and their completions are */
-static gfx_display_tex_load_t *gfx_display_tex_loads;
-
-static void gfx_display_tex_load_release(void *user, gfx_surface_t *s,
-      unsigned slot)
-{
-   gfx_display_tex_load_t  *e = (gfx_display_tex_load_t*)user;
-   gfx_display_tex_load_t **p = &gfx_display_tex_loads;
-   (void)slot;
-
-   while (*p && *p != e)
-      p = &(*p)->next;
-   if (*p)
-      *p = e->next;
-
-   /* A handle of 0 is a load the driver refused or a teardown */
-   if (!e->cancelled && s->handle)
-   {
-      *e->item  = s->handle;
-      s->handle = 0;
-   }
-   gfx_surface_free(s);
-   if (e->owned)
-      image_texture_free(&e->img);
-   free(e);
-}
-#endif
-
-void gfx_display_texture_loads_cancel(const void *base, size_t len)
-{
-#ifdef HAVE_THREADS
-   const char             *lo = (const char*)base;
-   const char             *hi = lo + len;
-   gfx_display_tex_load_t *e;
-   for (e = gfx_display_tex_loads; e; e = e->next)
-      if ((const char*)e->item >= lo && (const char*)e->item < hi)
-         e->cancelled = true;
-#else
-   (void)base;
-   (void)len;
-#endif
-}
-
-static bool gfx_display_texture_load_ex(struct texture_image *ti,
-      enum texture_filter_type filter, uintptr_t *item, bool owned)
-{
-#ifdef HAVE_THREADS
-   if (     ti && item && ti->pixels && !ti->compressed && !ti->pix10
-         && VIDEO_SCALE_FITS(ti->width, ti->height)
-         && video_driver_thread_wrapper_active()
-         && task_is_on_main_thread())
-   {
-      gfx_surface_t          *s = gfx_surface_new_static(
-            VIDEO_SCALE_PACK(ti->width, ti->height), filter);
-      gfx_display_tex_load_t *e = s
-         ? (gfx_display_tex_load_t*)calloc(1, sizeof(*e)) : NULL;
-      if (e)
-      {
-         enum gfx_surface_submit_result r;
-         gfx_surface_src_t src;
-         /* A newer load for the same slot replaces one in flight */
-         gfx_display_texture_loads_cancel(item, sizeof(*item));
-         e->item          = item;
-         e->img           = *ti;
-         e->owned         = owned;
-         /* The entry frees the pixels from its release, which always
-          * runs: a display load's surface is only freed there. */
-         src.pixels       = ti->pixels;
-         src.payload      = NULL;
-         src.payload_free = NULL;
-         src.pixfmt       = GFX_SURFACE_PIXFMT_8888;
-         src.rgba         = ti->supports_rgba;
-         r                = gfx_surface_submit_external(s, &src,
-               gfx_display_tex_load_release, e);
-         if (r == GFX_SURFACE_SUBMIT_QUEUED)
-         {
-            e->next               = gfx_display_tex_loads;
-            gfx_display_tex_loads = e;
-            /* The load frees them now; the caller's free skips them */
-            if (owned)
-               ti->pixels         = NULL;
-            return true;
-         }
-         if (r == GFX_SURFACE_SUBMIT_DONE)
-         {
-            *item     = s->handle;
-            s->handle = 0;
-            gfx_surface_free(s);
-            free(e);
-            return true;
-         }
-      }
-      free(e);
-      gfx_surface_free(s);
-   }
-#endif
-   return video_driver_texture_load(ti, filter, item);
-}
-
-bool gfx_display_texture_load(struct texture_image *ti,
-      enum texture_filter_type filter, uintptr_t *item)
-{
-   return gfx_display_texture_load_ex(ti, filter, item, true);
-}
-
-/* NOTE: Reads image from memory buffer */
-bool gfx_display_reset_textures_list_buffer(
-        uintptr_t *item, enum texture_filter_type filter_type,
-        void* buffer, unsigned buffer_len, enum image_type_enum image_type,
-        unsigned *dims)
-{
-   struct texture_image ti;
-
-   ti.width         = 0;
-   ti.height        = 0;
-   ti.pixels        = NULL;
-   ti.supports_rgba = gfx_surface_wants_rgba();
-   ti.pix10         = false;
-
-   if (image_texture_load_buffer(&ti, image_type, buffer, buffer_len))
-   {
-      if (dims)
-         *dims      = VIDEO_SCALE_PACK(ti.width, ti.height);
-
-      /* If the poke interface doesn't support 
-         texture load then free and return false */
-      if (!gfx_display_texture_load(&ti, filter_type, item))
-      {
-         image_texture_free(&ti);
-         return false;
-      }
-
-      image_texture_free(&ti);
-      return true;
-   }
-   return false;
-}
-
-/* NOTE: Reads image from file */
-bool gfx_display_reset_textures_list(
-      const char *texture_path, const char *iconpath,
-      uintptr_t *item, enum texture_filter_type filter_type,
-      unsigned *dims)
-{
-   char texpath[PATH_MAX_LENGTH];
-   struct texture_image ti;
-
-   ti.width                      = 0;
-   ti.height                     = 0;
-   ti.pixels                     = NULL;
-   ti.supports_rgba              = gfx_surface_wants_rgba();
-   ti.pix10                      = false;
-
-   if (!texture_path || !*texture_path)
-      return false;
-
-   fill_pathname_join_special(texpath,
-         iconpath, texture_path, sizeof(texpath));
-
-   if (!image_texture_load(&ti, texpath))
-      return false;
-
-   if (dims)
-      *dims = VIDEO_SCALE_PACK(ti.width, ti.height);
-
-   if (!gfx_display_texture_load(&ti,
-         filter_type, item))
-   {
-      image_texture_free(&ti);
-      return false;
-   }
-
-   image_texture_free(&ti);
-
-   return true;
-}
-
-bool gfx_display_reset_icon_texture(
-      const char *texture_path,
-      uintptr_t *item, enum texture_filter_type filter_type)
-{
-   struct texture_image ti;
-
-   ti.width                      = 0;
-   ti.height                     = 0;
-   ti.pixels                     = NULL;
-   ti.supports_rgba              = gfx_surface_wants_rgba();
-   ti.pix10                      = false;
-
-   if (!texture_path || !*texture_path)
-      return false;
-   if (!image_texture_load(&ti, texture_path))
-      return false;
-
-   if (!gfx_display_texture_load(&ti, filter_type, item))
-   {
-      image_texture_free(&ti);
-      return false;
-   }
-
-   image_texture_free(&ti);
-
-   return true;
-}
-
-/* -----------------------------------------------------------------------
- * Platform-adaptive icon/texture loading
- *
- * Dispatches to either the synchronous (blocking) or asynchronous
- * (task-queue) icon loading path depending on the platform.
- *
- * Platforms that define GFX_DISPLAY_ICON_LOAD_SYNCHRONOUS get the
- * pre-async behavior: image_texture_load -> video_driver_texture_load
- * in one call, no task queue involvement.  This avoids frame-spread
- * I/O and GL context contention on platforms where the async path is
- * actually slower (e.g. Android behind SAF / fuse storage).
- *
- * To opt a new platform into the synchronous path, add it to the
- * ifdef below.
- * ----------------------------------------------------------------------- */
-
-#if 0 
-#define GFX_DISPLAY_ICON_LOAD_SYNCHRONOUS
-#endif
-
 /* The mipmap choice, published for the draw-thread texture loads:
  * every main-thread caller of the live read below refreshes it, and
  * main callers run at least per menu rebuild, so the latch tracks
@@ -1882,60 +1621,6 @@ enum texture_filter_type gfx_display_texture_filter_latched(void)
 {
    return retro_atomic_load_relaxed_int(&gfx_display_mipmap_latch)
          ? TEXTURE_FILTER_MIPMAP_LINEAR : TEXTURE_FILTER_LINEAR;
-}
-
-bool gfx_display_load_icon(
-      const char *fullpath,
-      bool supports_rgba,
-      uintptr_t *target_texture,
-      uint64_t generation,
-      uint64_t *generation_ptr)
-{
-#ifdef GFX_DISPLAY_ICON_LOAD_SYNCHRONOUS
-   /* Synchronous path - identical to pre-async behavior.
-    * Generation counter is irrelevant: the load completes
-    * before this function returns, so there is no in-flight
-    * callback that could write to a freed pointer. */
-   (void)supports_rgba;
-   (void)generation;
-   (void)generation_ptr;
-   return gfx_display_reset_icon_texture(
-         fullpath, target_texture,
-         gfx_display_texture_filter());
-#else
-   return task_push_icon_load(
-         fullpath, supports_rgba,
-         target_texture, generation, generation_ptr);
-#endif
-}
-
-void gfx_display_deinit_white_texture(void)
-{
-   gfx_display_texture_loads_cancel(&gfx_white_texture,
-         sizeof(gfx_white_texture));
-   if (gfx_white_texture)
-      video_driver_texture_unload(&gfx_white_texture);
-   gfx_white_texture = 0;
-}
-
-void gfx_display_init_white_texture(void)
-{
-   struct texture_image ti;
-   static const uint8_t white_data[] = { 0xff, 0xff, 0xff, 0xff };
-
-   ti.width         = 1;
-   ti.height        = 1;
-   ti.pixels        = (uint32_t*)&white_data;
-   ti.compressed    = NULL; /* raw pixels, not a loaded compressed texture */
-   ti.pix10         = false; /* 8-bit white; must not be read as 10-bit */
-   /* Four 0xff bytes read either way, but the drivers read this field
-    * and it is the caller's to set: nothing here fills the struct
-    * beforehand, so an unset one is whatever the stack held. */
-   ti.supports_rgba = gfx_surface_wants_rgba();
-
-   /* The pixel is static: lent to the load, never freed by it */
-   gfx_display_texture_load_ex(&ti,
-         TEXTURE_FILTER_NEAREST, &gfx_white_texture, false);
 }
 
 void gfx_display_free(void)

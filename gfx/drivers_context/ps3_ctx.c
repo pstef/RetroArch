@@ -201,13 +201,11 @@ static void gfx_ctx_ps3_destroy(void *data)
 }
 
 static void gfx_ctx_ps3_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
-   void *ps3input       = input_driver_init_wrap(&input_ps3, joypad_name);
-
-   *input               = ps3input ? &input_ps3 : NULL;
-   *input_data          = ps3input;
+   /* no input driver of this driver's own: the frontend starts the
+    * platform's */
+   input_driver_video_window(INPUT_WINDOW_PLATFORM, NULL);
 }
 
 static enum gfx_ctx_api gfx_ctx_ps3_get_api(void *data) { return ps3_api; }

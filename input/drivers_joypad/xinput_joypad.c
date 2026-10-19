@@ -532,7 +532,8 @@ static int16_t xinput_joypad_axis(unsigned port, uint32_t joyaxis)
 
 static int16_t xinput_joypad_state_func(
       rarch_joypad_info_t *joypad_info,
-      const struct retro_keybind *binds,
+      const uint16_t *joykeys,
+      const uint32_t *joyaxes,
       unsigned port)
 {
    int i;
@@ -552,11 +553,8 @@ static int16_t xinput_joypad_state_func(
 
    for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
    {
-      /* Auto-binds are per joypad, not per user. */
-      const uint64_t joykey  = (binds[i].joykey != NO_BTN)
-         ? binds[i].joykey  : joypad_info->auto_binds[i].joykey;
-      const uint32_t joyaxis = (binds[i].joyaxis != AXIS_NONE)
-         ? binds[i].joyaxis : joypad_info->auto_binds[i].joyaxis;
+      const uint64_t joykey  = joykeys[i];
+      const uint32_t joyaxis = joyaxes[i];
       if (
                (uint16_t)joykey != NO_BTN
             && xinput_joypad_button_state(
@@ -653,7 +651,14 @@ static void xinput_joypad_poll(void)
           * xinput_joypad_button() consumes with no staleness
           * check. Treat an unreadable pad as having nothing
           * pressed. */
-         memset(&state->xstate, 0, sizeof(state->xstate));
+         state->xstate.dwPacketNumber        = 0;
+         state->xstate.Gamepad.wButtons      = 0;
+         state->xstate.Gamepad.bLeftTrigger  = 0;
+         state->xstate.Gamepad.bRightTrigger = 0;
+         state->xstate.Gamepad.sThumbLX      = 0;
+         state->xstate.Gamepad.sThumbLY      = 0;
+         state->xstate.Gamepad.sThumbRX      = 0;
+         state->xstate.Gamepad.sThumbRY      = 0;
       }
 
       if (new_connected != state->connected)

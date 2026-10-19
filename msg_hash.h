@@ -218,6 +218,10 @@ enum msg_file_type
    FILE_TYPE_PS,
    FILE_TYPE_TS,
    FILE_TYPE_MXF,
+   /* Further formats the built-in media player claims when its build
+    * can open them (see ffmpeg_core_supports_extension()). */
+   FILE_TYPE_MOVIE_OTHER,
+   FILE_TYPE_MUSIC_OTHER,
 
    FILE_TYPE_JPEG,
    FILE_TYPE_PNG,
@@ -282,6 +286,8 @@ enum msg_hash_enums
    MSG_NETPLAY_BANNED,
    MSG_FAILED_TO_RECEIVE_HEADER_FROM_HOST,
    MSG_NETPLAY_FAILED,
+   MSG_TLS_VERIFY_FAILED,
+   MSG_TLS_VERIFY_DISABLED,
    MSG_NETPLAY_UNSUPPORTED,
    MSG_UNKNOWN_NETPLAY_COMMAND_RECEIVED,
    MSG_CONNECTING_TO_NETPLAY_HOST,
@@ -327,6 +333,8 @@ enum msg_hash_enums
    MSG_NETPLAY_SLOWDOWNS_CAUSED,
    MSG_MENU_FRAME_RATE_DISPLAY,
    MSG_MENU_FRAME_RATE_CONTENT,
+   MSG_VIDEO_DRIVER_PACING_ON,
+   MSG_VIDEO_DRIVER_PACING_BOOST,
    MSG_RESAMPLER_QUALITY_LOWEST,
    MSG_RESAMPLER_QUALITY_LOWER,
    MSG_RESAMPLER_QUALITY_NORMAL,
@@ -373,6 +381,7 @@ enum msg_hash_enums
    MSG_FILE_NOT_FOUND,
    MSG_VALUE_SHUTTING_DOWN,
    MSG_VALUE_REBOOTING,
+   MSG_VALUE_INSTALL_UPDATE,
    MSG_FAILED_TO_START_AUDIO_DRIVER,
    MSG_FOUND_LAST_STATE_SLOT,
    MSG_FOUND_LAST_REPLAY_SLOT,
@@ -466,6 +475,7 @@ enum msg_hash_enums
    MSG_CONTENT_NETPACKET_CRC32S_DIFFER,
    MSG_PING_TOO_HIGH,
    MSG_RECORDING_TERMINATED_DUE_TO_RESIZE,
+   MSG_RECORDING_GAME_ONLY_UNSUPPORTED,
    MSG_FAILED_TO_START_RECORDING,
    MSG_REVERTING_SAVEFILE_DIRECTORY_TO,
    MSG_ERROR_PARSING_ARGUMENTS,
@@ -497,6 +507,16 @@ enum msg_hash_enums
    MSG_REMAP_FILE_SAVED_SUCCESSFULLY,
    MSG_REMAP_FILE_REMOVED_SUCCESSFULLY,
    MSG_REMAP_FILE_RESET,
+   MSG_INPUT_REMAP_FIND_PRESS,
+   MSG_INPUT_COMBO_SET_BUTTONS,
+   MSG_INPUT_BT_PAIRED,
+   MSG_INPUT_BT_PAIR_FAILED,
+   MSG_INPUT_COMBO_CHOOSE_ACTION,
+   MSG_INPUT_COMBO_INSTANT,
+   MSG_INPUT_COMBO_HOLD_SECONDS,
+   MSG_INPUT_COMBO_HOLD_FOR,
+   MSG_INPUT_COMBO_ROW_SUBLABEL,
+   MSG_INPUT_MACRO_ROW_SUBLABEL,
    MSG_INPUT_BIND_PRESS,
    MSG_INPUT_BIND_RELEASE,
    MSG_INPUT_BIND_TIMEOUT,
@@ -577,6 +597,7 @@ enum msg_hash_enums
    MSG_BLOCKING_SRAM_OVERWRITE,
    MSG_UNRECOGNIZED_COMMAND,
    MSG_SENDING_COMMAND,
+   MSG_MCP_SERVER_NOT_LISTENING,
    MSG_RESTARTING_RECORDING_DUE_TO_DRIVER_REINIT,
    MSG_REWINDING,
    MSG_SLOW_MOTION_REWIND,
@@ -688,12 +709,24 @@ enum msg_hash_enums
    MSG_LOADING_ENTRY_STATE_FROM,
    MSG_FOUND_ENTRY_STATE_IN,
    MSG_FAILED_TO_ENTER_GAMEMODE,
+   MSG_FAILED_TO_APPLY_POWER_PLAN,
+   MSG_FAILED_TO_DISABLE_IDLE_STATES,
    MSG_FAILED_TO_ENTER_GAMEMODE_LINUX,
    MSG_VRR_RUNLOOP_ENABLED,
    MSG_VRR_RUNLOOP_DISABLED,
    MSG_VIDEO_REFRESH_RATE_CHANGED,
    MSG_VIDEO_FILTER_ENABLE_ON,
    MSG_VIDEO_FILTER_ENABLE_OFF,
+   MSG_OPENXR_UNAVAILABLE,
+   MSG_OPENXR_FAILED,
+   MSG_OPENXR_SESSION_ENDED,
+   MSG_OPENXR_NEEDS_RELOAD,
+   MSG_OPENXR_RATE_MISFIT,
+   MSG_OPENXR_LASER_POINTER,
+   MSG_OPENXR_HEADSET_VIEW,
+   MSG_OPENXR_HEADSET_VIEW_IMMERSIVE,
+   MSG_OPENXR_HEADSET_VIEW_STEREOSCOPIC,
+   MSG_OPENXR_HEADSET_VIEW_FLAT,
 
    MSG_IOS_TOUCH_MOUSE_ENABLED,
    MSG_IOS_TOUCH_MOUSE_DISABLED,
@@ -2132,6 +2165,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_SYSTEM_INFO_CONTROLLER_ENTRY,
    MENU_ENUM_LABEL_SYSTEM_INFO_KEYBOARD_ENTRY,
    MENU_ENUM_LABEL_SYSTEM_INFO_MOUSE_ENTRY,
+   MENU_ENUM_LABEL_INPUT_BT_PAIR,
    MENU_ENUM_LABEL_CORE_INFO_ENTRY,
    MENU_ENUM_LABEL_CORE_MANAGER_ENTRY,
 #ifdef HAVE_MIST
@@ -2677,6 +2711,9 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_INPUT_META_RUNAHEAD_TOGGLE,
    MENU_ENUM_LABEL_VALUE_INPUT_META_PREEMPT_TOGGLE,
    MENU_ENUM_LABEL_VALUE_INPUT_META_VIDEO_FILTER_TOGGLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_META_HEADSET_RECENTER,
+   MENU_ENUM_LABEL_VALUE_INPUT_META_LASER_POINTER_TOGGLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_META_HEADSET_VIEW_TOGGLE,
    MENU_ENUM_LABEL_VALUE_INPUT_META_FPS_TOGGLE,
    MENU_ENUM_LABEL_VALUE_INPUT_META_STATISTICS_TOGGLE,
    MENU_ENUM_LABEL_VALUE_INPUT_META_AI_SERVICE,
@@ -2791,6 +2828,9 @@ enum msg_hash_enums
    MENU_ENUM_SUBLABEL_INPUT_META_RUNAHEAD_TOGGLE,
    MENU_ENUM_SUBLABEL_INPUT_META_PREEMPT_TOGGLE,
    MENU_ENUM_SUBLABEL_INPUT_META_VIDEO_FILTER_TOGGLE,
+   MENU_ENUM_SUBLABEL_INPUT_META_HEADSET_RECENTER,
+   MENU_ENUM_SUBLABEL_INPUT_META_LASER_POINTER_TOGGLE,
+   MENU_ENUM_SUBLABEL_INPUT_META_HEADSET_VIEW_TOGGLE,
    MENU_ENUM_SUBLABEL_INPUT_META_FPS_TOGGLE,
    MENU_ENUM_SUBLABEL_INPUT_META_STATISTICS_TOGGLE,
    MENU_ENUM_SUBLABEL_INPUT_META_AI_SERVICE,
@@ -6893,7 +6933,6 @@ enum msg_hash_enums
 #undef S_ACTION_EX_NS_H
 #undef SETTINGS_DEF_STRINGS_PASS
 #undef SETTINGS_DEF_ENUM_PASS
-   MENU_LABEL(VIDEO_SCANLINE_SYNC),
    /* GENERATED REGION: video fullscreen group enum rows (see settings/settings_def_video_fullscreen.h). */
 #define SETTINGS_DEF_ENUM_PASS
 #define SETTINGS_DEF_STRINGS_PASS
@@ -9199,7 +9238,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_EXPANDED,
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_WIDE,
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_SUPER,
-   /* GENERATED REGION: HDR toggle group enum rows (see settings/settings_def_video_hdr_toggles.h). */
+   /* GENERATED REGION: HDR toggle group, stereo 3D & screens group and headset group enum rows (see settings/settings_def_video_hdr_toggles.h, settings/settings_def_video_stereo.h and settings/settings_def_video_headset.h). */
 #define SETTINGS_DEF_ENUM_PASS
 #define SETTINGS_DEF_STRINGS_PASS
 #define S_BOOL(f, T, n, d, sd, df, c, us, sub) MENU_LABEL(T),
@@ -9263,6 +9302,8 @@ enum msg_hash_enums
 #define S_ACTION_EX_H(T, n, sd, ok, rp, c, us, sub) MENU_LBL_H(T),
 #define S_ACTION_EX_NS_H(T, n, sd, ok, rp, c, us) MENU_LBL_H(T),
 #include "settings/settings_def_video_hdr_toggles.h"
+#include "settings/settings_def_video_stereo.h"
+#include "settings/settings_def_video_headset.h"
 #undef S_BOOL
 #undef S_BOOL_NS
 #undef S_UINT
@@ -9328,6 +9369,24 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_RGB,
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_RBG,
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT_BGR,
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_2D,
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_HALF,
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_SBS_FULL,
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_TOP_BOTTOM,
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_ANAGLYPH,
+   MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_INTERLACED,
+   MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
+   MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_COMBINED,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_CONTROLLERS_SEPARATE,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_FIXED,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_FOLLOW,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_PLACEMENT_LAZY,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
+   MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_HEADSET,
 
    MENU_LBL_H(PARENT_DIRECTORY),
    MENU_LBL_H(FILE_BROWSER_OPEN_UWP_PERMISSIONS),
@@ -19345,6 +19404,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_SPECIAL,
    MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_RESOLUTION,
    MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_CRT_SUPER_RESOLUTION,
+   MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_HEADSET_REFRESH_RATE,
    MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_AUDIO_DEVICE,
    MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_MIDI_DEVICE,
 #ifdef HAVE_MICROPHONE
@@ -19429,6 +19489,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_DEFERRED_VIDEO_OUTPUT_SETTINGS_LIST,
    MENU_ENUM_LABEL_DEFERRED_VIDEO_SYNCHRONIZATION_SETTINGS_LIST,
    MENU_ENUM_LABEL_DEFERRED_VIDEO_HDR_SETTINGS_LIST,
+   MENU_ENUM_LABEL_DEFERRED_VIDEO_STEREO_SETTINGS_LIST,
    MENU_ENUM_LABEL_DEFERRED_VIDEO_SCALING_SETTINGS_LIST,
    MENU_ENUM_LABEL_DEFERRED_CRT_SWITCHRES_SETTINGS_LIST,
    MENU_ENUM_LABEL_DEFERRED_CONFIGURATION_SETTINGS_LIST,
@@ -22532,6 +22593,8 @@ enum msg_hash_enums
    MENU_LABEL(SWITCH_OC_ENABLE),
    MENU_LABEL(SWITCH_CEC_ENABLE),
    MENU_LABEL(BLUETOOTH_ERTM_DISABLE),
+   MENU_LABEL(REBOOT_PAYLOAD),
+   MENU_LABEL(REBOOT_FORCE_SELF_ON_UPDATE),
 #endif
    MENU_LBL_H(NETPLAY_START_AS_SPECTATOR),
    MENU_LABEL(NETPLAY_FADE_CHAT),
@@ -23885,6 +23948,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_AUDIO_DRIVER_COREAUDIO,
    MENU_ENUM_LABEL_AUDIO_DRIVER_AL,
    MENU_ENUM_LABEL_AUDIO_DRIVER_SL,
+   MENU_ENUM_LABEL_AUDIO_DRIVER_AAUDIO,
    MENU_ENUM_LABEL_AUDIO_DRIVER_SDL,
    MENU_ENUM_LABEL_AUDIO_DRIVER_SDL2,
    MENU_ENUM_LABEL_AUDIO_DRIVER_DSOUND,
@@ -23916,6 +23980,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_COREAUDIO,
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_AL,
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_SL,
+   MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_AAUDIO,
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_SDL,
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_SDL2,
    MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_DSOUND,
@@ -29905,6 +29970,10 @@ enum msg_hash_enums
    MENU_LABEL(REMAP_FILE_REMOVE_CONTENT_DIR),
    MENU_LABEL(REMAP_FILE_REMOVE_GAME),
    MENU_LABEL(REMAP_FILE_RESET),
+   MENU_LABEL(INPUT_REMAP_FIND),
+   MENU_LABEL(INPUT_COMBO_TARGET),
+   MENU_LABEL(INPUT_COMBO_HOLD),
+   MENU_LABEL(INPUT_COMBO_HOLD_TIME),
    MENU_LABEL(REMAP_FILE_FLUSH),
 
    MENU_LABEL(OVERRIDE_FILE_INFO),
@@ -31578,6 +31647,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE_DISCHARGING,
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_VIDEO_CONTEXT_DRIVER,
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_PACING,
+   MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_DRIVER_PACING,
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_DISPLAY_METRIC_MM_WIDTH,
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_DISPLAY_METRIC_MM_HEIGHT,
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_DISPLAY_METRIC_DPI,
@@ -31620,6 +31690,7 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_CHECKSUM_BAD,
    MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_TRUNCATED,
    MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_UNAVAILABLE,
+   MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_UNAVAILABLE_ANDROID,
    MENU_ENUM_LABEL_VALUE_DISPLAY_EDID_RAW,
 
    MENU_ENUM_LABEL_VALUE_NO,
@@ -31637,6 +31708,10 @@ enum msg_hash_enums
    MENU_ENUM_LABEL_VALUE_KEYBOARD_SYSTEM_NAME,
    MENU_ENUM_LABEL_VALUE_MOUSE_SYSTEM_NAME,
    MENU_ENUM_LABEL_VALUE_INPUT_SYSTEM_DEVICE_INFO,
+   MENU_ENUM_LABEL_VALUE_BLUETOOTH_HOST_INFO,
+   MENU_ENUM_LABEL_VALUE_PORT_BT_HOST,
+   MENU_ENUM_LABEL_VALUE_PORT_BT_HOST_THIS,
+   MENU_ENUM_LABEL_VALUE_PORT_BT_PAIR,
 
    MENU_ENUM_LABEL_VALUE_LEFT_ANALOG,
    MENU_ENUM_LABEL_VALUE_LEFT_ANALOG_FORCED,
@@ -33198,6 +33273,186 @@ enum msg_hash_enums
 #define S_ACTION_EX_H(T, n, sd, ok, rp, c, us, sub) MENU_LBL_H(T),
 #define S_ACTION_EX_NS_H(T, n, sd, ok, rp, c, us) MENU_LBL_H(T),
 #include "settings/settings_def_gamemode.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_BOOL_H
+#undef S_BOOL_NS_H
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_UINT_H
+#undef S_UINT_NS_H
+#undef S_INT
+#undef S_INT_NS
+#undef S_INT_H
+#undef S_INT_NS_H
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_FLOAT_H
+#undef S_FLOAT_NS_H
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_STRING_H
+#undef S_STRING_NS_H
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_DIR_H
+#undef S_DIR_NS_H
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_STRING_P_H
+#undef S_STRING_P_NS_H
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_H
+#undef S_PATH_NS_H
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+#undef S_PATH_DS_H
+#undef S_PATH_DS_NS_H
+#undef S_ACTION
+#undef S_ACTION_NS
+#undef S_ACTION_H
+#undef S_ACTION_NS_H
+#undef S_BOOL_EX
+#undef S_BOOL_EX_NS
+#undef S_BOOL_EX_H
+#undef S_BOOL_EX_NS_H
+#undef S_UINT_EX
+#undef S_UINT_EX_NS
+#undef S_UINT_EX_H
+#undef S_UINT_EX_NS_H
+#undef S_INT_EX
+#undef S_INT_EX_NS
+#undef S_INT_EX_H
+#undef S_INT_EX_NS_H
+#undef S_FLOAT_EX
+#undef S_FLOAT_EX_NS
+#undef S_FLOAT_EX_H
+#undef S_FLOAT_EX_NS_H
+#undef S_ACTION_EX
+#undef S_ACTION_EX_NS
+#undef S_ACTION_EX_H
+#undef S_ACTION_EX_NS_H
+#undef S_BOOL_LV
+#undef S_BOOL_LV_NS
+#undef S_BOOL_LV_H
+#undef S_BOOL_LV_NS_H
+#undef S_FLOAT_LV
+#undef S_FLOAT_LV_NS
+#undef S_FLOAT_LV_H
+#undef S_FLOAT_LV_NS_H
+#undef S_STRING_LV
+#undef S_STRING_LV_NS
+#undef S_STRING_LV_H
+#undef S_STRING_LV_NS_H
+#undef S_ACTION_LV
+#undef S_ACTION_LV_NS
+#undef S_ACTION_LV_H
+#undef S_ACTION_LV_NS_H
+#undef S_INT_AT
+#undef S_INT_AT_NS
+#undef S_INT_AT_H
+#undef S_INT_AT_NS_H
+#undef S_UINT_AT_EX
+#undef S_UINT_AT_EX_NS
+#undef S_UINT_AT_EX_H
+#undef S_UINT_AT_EX_NS_H
+#undef S_BOOL_H
+#undef S_UINT_H
+#undef S_BOOL_NS_H
+#undef S_INT_H
+#undef S_FLOAT_H
+#undef S_UINT_NS_H
+#undef S_INT_NS_H
+#undef S_FLOAT_NS_H
+#undef S_STRING_H
+#undef S_STRING_NS_H
+#undef S_DIR_H
+#undef S_DIR_NS_H
+#undef S_STRING_P_H
+#undef S_STRING_P_NS_H
+#undef S_PATH_H
+#undef S_PATH_NS_H
+#undef S_PATH_DS_H
+#undef S_PATH_DS_NS_H
+#undef S_ACTION_H
+#undef S_ACTION_NS_H
+#undef S_BOOL_EX_H
+#undef S_BOOL_EX_NS_H
+#undef S_UINT_EX_H
+#undef S_UINT_EX_NS_H
+#undef S_INT_EX_H
+#undef S_INT_EX_NS_H
+#undef S_FLOAT_EX_H
+#undef S_FLOAT_EX_NS_H
+#undef S_ACTION_EX_H
+#undef S_ACTION_EX_NS_H
+#undef SETTINGS_DEF_STRINGS_PASS
+#undef SETTINGS_DEF_ENUM_PASS
+   /* GENERATED REGION: Windows low-latency power plan enum rows (see settings/settings_def_power_plan.h). */
+#define SETTINGS_DEF_ENUM_PASS
+#define SETTINGS_DEF_STRINGS_PASS
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) MENU_LABEL(T),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) MENU_LABEL(T),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) MENU_LABEL(T),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) MENU_LABEL(T),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) MENU_LABEL(T),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) MENU_LABEL(T),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) MENU_LABEL(T),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) MENU_LABEL(T),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) MENU_LABEL(T),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) MENU_LABEL(T),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) MENU_LABEL(T),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) MENU_LABEL(T),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) MENU_LABEL(T),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) MENU_LABEL(T),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) MENU_LABEL(T),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) MENU_LABEL(T),
+#define S_ACTION(T, n, us, sub) MENU_LABEL(T),
+#define S_ACTION_NS(T, n, us) MENU_LABEL(T),
+#define S_BOOL_EX(f, T, n, d, sd, df, c, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
+#define S_BOOL_EX_NS(f, T, n, d, sd, df, c, ok, rp, sta, sel, lf, rt, ui, us) MENU_LABEL(T),
+#define S_UINT_EX(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
+#define S_UINT_EX_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us) MENU_LABEL(T),
+#define S_INT_EX(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
+#define S_INT_EX_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us) MENU_LABEL(T),
+#define S_FLOAT_EX(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LABEL(T),
+#define S_FLOAT_EX_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, sta, sel, lf, rt, ui, us) MENU_LABEL(T),
+#define S_ACTION_EX(T, n, sd, ok, rp, c, us, sub) MENU_LABEL(T),
+#define S_ACTION_EX_NS(T, n, sd, ok, rp, c, us) MENU_LABEL(T),
+#define S_BOOL_H(f, T, n, d, sd, df, c, us, sub) MENU_LBL_H(T),
+#define S_UINT_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) MENU_LBL_H(T),
+#define S_BOOL_NS_H(f, T, n, d, sd, df, c, us) MENU_LBL_H(T),
+#define S_INT_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) MENU_LBL_H(T),
+#define S_FLOAT_H(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) MENU_LBL_H(T),
+#define S_UINT_NS_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) MENU_LBL_H(T),
+#define S_INT_NS_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) MENU_LBL_H(T),
+#define S_FLOAT_NS_H(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) MENU_LBL_H(T),
+#define S_STRING_H(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LBL_H(T),
+#define S_STRING_NS_H(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) MENU_LBL_H(T),
+#define S_DIR_H(f, T, n, d, el, sd, c, sta, us, sub) MENU_LBL_H(T),
+#define S_DIR_NS_H(f, T, n, d, el, sd, c, sta, us) MENU_LBL_H(T),
+#define S_STRING_P_H(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LBL_H(T),
+#define S_STRING_P_NS_H(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) MENU_LBL_H(T),
+#define S_PATH_H(f, T, n, d, sd, c, vals, rp, ui, us, sub) MENU_LBL_H(T),
+#define S_PATH_NS_H(f, T, n, d, sd, c, vals, rp, ui, us) MENU_LBL_H(T),
+#define S_PATH_DS_H(f, T, n, df2, sd, c, vals, rp, ui, us, sub) MENU_LBL_H(T),
+#define S_PATH_DS_NS_H(f, T, n, df2, sd, c, vals, rp, ui, us) MENU_LBL_H(T),
+#define S_ACTION_H(T, n, us, sub) MENU_LBL_H(T),
+#define S_ACTION_NS_H(T, n, us) MENU_LBL_H(T),
+#define S_BOOL_EX_H(f, T, n, d, sd, df, c, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LBL_H(T),
+#define S_BOOL_EX_NS_H(f, T, n, d, sd, df, c, ok, rp, sta, sel, lf, rt, ui, us) MENU_LBL_H(T),
+#define S_UINT_EX_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LBL_H(T),
+#define S_UINT_EX_NS_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us) MENU_LBL_H(T),
+#define S_INT_EX_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LBL_H(T),
+#define S_INT_EX_NS_H(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, sta, sel, lf, rt, ui, us) MENU_LBL_H(T),
+#define S_FLOAT_EX_H(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, sta, sel, lf, rt, ui, us, sub) MENU_LBL_H(T),
+#define S_FLOAT_EX_NS_H(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, sta, sel, lf, rt, ui, us) MENU_LBL_H(T),
+#define S_ACTION_EX_H(T, n, sd, ok, rp, c, us, sub) MENU_LBL_H(T),
+#define S_ACTION_EX_NS_H(T, n, sd, ok, rp, c, us) MENU_LBL_H(T),
+#include "settings/settings_def_power_plan.h"
 #undef S_BOOL
 #undef S_BOOL_NS
 #undef S_BOOL_H

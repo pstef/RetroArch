@@ -39,10 +39,15 @@
 #include <formats/rwebm.h>
 #include <formats/rvp8.h>
 #ifdef HAVE_RVP9
-#include <formats/rvp9.h>
+#include <formats/rvp9_hw.h>
 #endif
+#include <formats/image_yuv_blit.h>
 #include <formats/rwebm_video.h>
 #include <formats/image_blit_bands.h>
+#ifdef HAVE_RAV1
+#include <formats/rav1_hw_stream.h>
+#include <features/features_cpu.h>
+#endif
 
 /* Per-packet timestamps are pre-scanned at open so every frame's display
  * duration is known without lookahead decoding; cap the table so a
@@ -59,11 +64,31 @@ struct rwebm_video_stream
    rvp8_video  *vp8;
 #ifdef HAVE_RVP9
    rvp9_dec    *vp9;
+   rvp9_hw_session_t *hw;
+   rvp9_hw_backend_t hw_backend;
+   size_t super_sizes[RWEBM_VIDEO_MAX_SUPER], super_offset;
+   int super_count, super_index, last_show, submitted;
 #endif
+#ifdef HAVE_RAV1
+   rav1_hw_stream_t *av1;
+#endif
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+   uint32_t hw_marker;
+   video_hw_frame_t hw_frame;
+   const uint8_t *buf;
+   size_t len, avail, pending_floor;
+   rwebm_packet pending_packet;
+   int pending, pending_idx;
+   int hw_want, hw_untaken, hw_skip;
+   unsigned hw_yuv_mask, hw_yuv;
+   video_color_metadata_t hw_color;
+#endif
+   int waiting;
    uint32_t    *frame;      /* width * height ABGR words              */
    uint32_t    *out;        /* caller's frame to blit into instead of
                                'frame'; NULL for the stream's own    */
    void        *blit_pool;  /* tpool_t the blit's row bands run on   */
+   unsigned     out_stride; /* caller row stride in pixels, 0: width */
    unsigned     blit_bands; /* how many; <= 1 blits on this thread   */
    int64_t     *ts;         /* pre-scanned packet timestamps (ns)     */
    int          ts_count;   /* entries stored in ts                   */
@@ -75,6 +100,9 @@ struct rwebm_video_stream
    unsigned     height;
    int          want10;     /* caller requested 10-bit output         */
    int          is10;       /* last decoded frame written as 10-bit    */
+   int          want_fp16;  /* caller takes linear scRGB half floats
+                               for an HDR source, into 'out'         */
+   int          is_fp16;    /* last decoded frame written so          */
    int          emit_argb;  /* emit ARGB words instead of the default
                                R,G,B,A memory order (8-bit paths)     */
 };
@@ -108,6 +136,12 @@ struct rwebm_video
    int            still_stage; /* enum above */
    int            want10;     /* caller requested 10-bit thumbnail output */
    int            last_10bit; /* last processed frame was XRGB2101010 */
+   int            want_fp16;  /* caller takes half floats for HDR      */
+   int            last_fp16;  /* last processed frame was half floats  */
+   /* An HDR still's frame: width * height 8-byte pixels the stream
+    * decodes into from the decode stage on, handed out as the still -
+    * the canvas and its copy are skipped. NULL otherwise. */
+   uint16_t      *still_fp16;
    /* Bytes of 'buf' actually read so far, for decoding a still from a
     * file whose read is in progress: 0 means fully resident (the
     * default), and the still decode returns IMAGE_PROCESS_WAIT
@@ -420,6 +454,10 @@ static bool rwebm_video_stream_open_decoder(rwebm_video_stream_t *s)
 {
    switch (s->codec)
    {
+#ifdef HAVE_RAV1
+      case RWEBM_CODEC_AV1:
+         return true;
+#endif
       case RWEBM_CODEC_VP8:
          if (!(s->vp8 = rvp8_video_open()))
             return false;
@@ -444,7 +482,27 @@ static void rwebm_video_stream_close_decoder(rwebm_video_stream_t *s)
       rvp8_video_close(s->vp8);
       s->vp8 = NULL;
    }
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+   if (s->hw_untaken) video_hw_frame_abandon(&s->hw_frame);
+   s->hw_untaken = 0;
+   memset(&s->hw_frame, 0, sizeof(s->hw_frame));
+   s->pending = s->waiting = 0;
+#endif
+#ifdef HAVE_RAV1
+   if (s->av1)
+   {
+      rav1_hw_stream_close(s->av1);
+      free(s->av1);
+      s->av1 = NULL;
+   }
+#endif
 #ifdef HAVE_RVP9
+   if (s->hw)
+   {
+      rvp9_hw_session_cancel(s->hw);
+      s->hw_backend.close(&s->hw->ops);
+      free(s->hw); s->hw = NULL;
+   }
    if (s->vp9)
    {
       rvp9_free(s->vp9);
@@ -467,7 +525,8 @@ static void rwebm_video_stream_close_decoder(rwebm_video_stream_t *s)
  * one-shot behaviour. */
 
 static rwebm_video_stream_t *rwebm_video_stream_open_begin(
-      const uint8_t *buf, size_t len, size_t avail, int *need_more)
+      const uint8_t *buf, size_t len, size_t avail, int *need_more,
+      int allow_hw)
 {
    rwebm_video_stream_t *s;
    const rwebm_track *trk = NULL;
@@ -480,6 +539,9 @@ static rwebm_video_stream_t *rwebm_video_stream_open_begin(
 
    if (!(s = (rwebm_video_stream_t*)calloc(1, sizeof(*s))))
       return NULL;
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+   s->buf = buf; s->len = len; s->avail = avail > len ? len : avail;
+#endif
 
    if (!(s->demux = rwebm_open_memory_avail(buf, len, avail, need_more)))
       goto fail;
@@ -498,6 +560,9 @@ static rwebm_video_stream_t *rwebm_video_stream_open_begin(
 #ifdef HAVE_RVP9
           && t->codec != RWEBM_CODEC_VP9
 #endif
+#ifdef HAVE_RAV1
+          && !(allow_hw && t->codec == RWEBM_CODEC_AV1)
+#endif
          )
          continue;
       s->track  = i;
@@ -508,6 +573,7 @@ static rwebm_video_stream_t *rwebm_video_stream_open_begin(
    if (s->track < 0)
       goto fail;
 
+   (void)allow_hw;
    s->width  = trk->width;
    s->height = trk->height;
 
@@ -568,8 +634,7 @@ static int rwebm_video_stream_open_finish(rwebm_video_stream_t *s)
    if (!rwebm_video_stream_open_decoder(s))
       return -1;
 
-   if (!(s->frame = (uint32_t*)malloc(
-         (size_t)s->width * s->height * sizeof(uint32_t))))
+   if ((size_t)s->width > SIZE_MAX / sizeof(uint32_t) / s->height)
       return -1;
 
    return 0;
@@ -580,7 +645,7 @@ rwebm_video_stream_t *rwebm_video_stream_open(const uint8_t *buf,
 {
    rwebm_video_stream_t *s;
 
-   if (!(s = rwebm_video_stream_open_begin(buf, len, len, NULL)))
+   if (!(s = rwebm_video_stream_open_begin(buf, len, len, NULL, 0)))
       return NULL;
    rwebm_video_stream_scan_step(s, 0);
    if (rwebm_video_stream_open_finish(s) != 0)
@@ -591,15 +656,16 @@ rwebm_video_stream_t *rwebm_video_stream_open(const uint8_t *buf,
    return s;
 }
 
-rwebm_video_stream_t *rwebm_video_stream_open_avail(const uint8_t *buf,
-      size_t len, size_t avail, int *need_more)
+static rwebm_video_stream_t *rwebm_video_stream_open_avail_internal(
+      const uint8_t *buf, size_t len, size_t avail, int *need_more,
+      int allow_hw)
 {
    rwebm_video_stream_t *s;
    int sr;
 
    if (need_more)
       *need_more = 0;
-   if (!(s = rwebm_video_stream_open_begin(buf, len, avail, need_more)))
+   if (!(s = rwebm_video_stream_open_begin(buf, len, avail, need_more, allow_hw)))
       return NULL;
    /* Same wall policy as the partial still decode: timestamps live in
     * the block headers, so the pre-scan cannot run ahead of the media
@@ -623,6 +689,18 @@ rwebm_video_stream_t *rwebm_video_stream_open_avail(const uint8_t *buf,
       return NULL;
    }
    return s;
+}
+
+rwebm_video_stream_t *rwebm_video_stream_open_avail(const uint8_t *buf,
+      size_t len, size_t avail, int *need_more)
+{
+   return rwebm_video_stream_open_avail_internal(buf, len, avail, need_more, 0);
+}
+
+rwebm_video_stream_t *rwebm_video_stream_open_hw_avail(const uint8_t *buf,
+      size_t len, size_t avail, int *need_more)
+{
+   return rwebm_video_stream_open_avail_internal(buf, len, avail, need_more, 1);
 }
 
 void rwebm_video_stream_close(rwebm_video_stream_t *s)
@@ -658,10 +736,43 @@ void rwebm_video_stream_set_argb(rwebm_video_stream_t *s, int argb)
       s->emit_argb = argb ? 1 : 0;
 }
 
+int rwebm_video_stream_set_output_stride(rwebm_video_stream_t *s,
+      uint32_t *out, unsigned stride)
+{
+   if (!s)
+      return 0;
+   if (!stride)
+      stride = s->width;
+   if (out && (stride < s->width
+            || (s->height && (size_t)stride > SIZE_MAX / 8 / s->height)))
+      return 0;
+   s->out        = out;
+   s->out_stride = out ? stride : 0;
+   return 1;
+}
+
 void rwebm_video_stream_set_output(rwebm_video_stream_t *s, uint32_t *out)
 {
+   rwebm_video_stream_set_output_stride(s, out, 0);
+}
+
+void rwebm_video_stream_set_want_fp16(rwebm_video_stream_t *s, int want)
+{
    if (s)
-      s->out = out;
+      s->want_fp16 = want ? 1 : 0;
+}
+
+int rwebm_video_stream_is_fp16(const rwebm_video_stream_t *s)
+{
+   return s && s->is_fp16;
+}
+
+int rwebm_video_stream_is_hdr(const rwebm_video_stream_t *s)
+{
+   const rwebm_track *t = (s && s->demux)
+      ? rwebm_get_track(s->demux, s->track) : NULL;
+   return t && (     t->transfer_characteristics == 16
+                  || t->transfer_characteristics == 18);
 }
 
 void rwebm_video_stream_set_blit_pool(rwebm_video_stream_t *s,
@@ -690,7 +801,9 @@ typedef struct
    int ys, uvs;
    unsigned matrix, transfer, range, max_cll;
    int argb;
-   int kind;                /* 0: 8-bit, 1: hbd to 8-bit, 2: 10-bit */
+   int kind;                /* 0: 8-bit, 1: hbd to 8-bit, 2: 10-bit,
+                               3: HDR to scRGB half floats, whose
+                               rows are dst_stride 8-byte pixels */
 } rwebm_blit_ctx_t;
 
 static void rwebm_video_blit_rows(void *arg, unsigned row0, unsigned rows)
@@ -713,12 +826,21 @@ static void rwebm_video_blit_rows(void *arg, unsigned row0, unsigned rows)
                (const uint16_t*)c->v + (size_t)(row0 >> 1) * c->uvs, c->uvs,
                c->matrix, c->transfer, c->range, c->max_cll, c->argb);
          break;
-      default:
+      case 2:
          rwebm_video_blit_i420_10bit(dst, c->dst_stride, c->w, rows,
                (const uint16_t*)c->y + (size_t)row0 * c->ys, c->ys,
                (const uint16_t*)c->u + (size_t)(row0 >> 1) * c->uvs,
                (const uint16_t*)c->v + (size_t)(row0 >> 1) * c->uvs, c->uvs,
                c->matrix, c->transfer, c->range, c->max_cll);
+         break;
+      default:
+         rwebm_video_blit_i420_fp16(
+               (uint16_t*)c->dst + (size_t)row0 * c->dst_stride * 4,
+               c->dst_stride, c->w, rows,
+               (const uint16_t*)c->y + (size_t)row0 * c->ys, c->ys,
+               (const uint16_t*)c->u + (size_t)(row0 >> 1) * c->uvs,
+               (const uint16_t*)c->v + (size_t)(row0 >> 1) * c->uvs, c->uvs,
+               c->matrix, c->transfer, c->range);
          break;
    }
 }
@@ -743,7 +865,12 @@ static void rwebm_video_blit_frame(rwebm_video_stream_t *s,
 void rwebm_video_stream_set_avail(rwebm_video_stream_t *s, size_t avail)
 {
    if (s)
+   {
       rwebm_set_avail(s->demux, avail);
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+      s->avail = avail > s->len ? s->len : avail;
+#endif
+   }
 }
 
 size_t rwebm_video_stream_media_floor(rwebm_video_stream_t *s)
@@ -753,7 +880,11 @@ size_t rwebm_video_stream_media_floor(rwebm_video_stream_t *s)
 
 size_t rwebm_video_stream_consumed(rwebm_video_stream_t *s)
 {
-   return s ? rwebm_tell(s->demux) : 0;
+   if (!s) return 0;
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+   if (s->pending) return s->pending_floor;
+#endif
+   return rwebm_consumed(s->demux);
 }
 
 int64_t rwebm_video_stream_duration_ns(rwebm_video_stream_t *s)
@@ -821,14 +952,359 @@ static int rwebm_video_duration_ms(const rwebm_video_stream_t *s, int idx)
    return (int)(t1 / 1000000 - t0 / 1000000);
 }
 
-/* Decode one demuxed packet into the output frame (the caller's when one
- * was set, else s->frame). Returns 1 when a picture was
- * produced, 0 when the packet decoded but is not displayed, -1 on a
- * decode error. */
-static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
-      const rwebm_packet *pkt)
+#ifdef HAVE_RAV1
+static bool rwebm_video_av1_sequence(rwebm_video_stream_t *s,
+      rav1_config_t *config)
 {
-   uint32_t *dst = s->out ? s->out : s->frame;
+   rwebm_t *probe;
+   rwebm_packet packet;
+   unsigned walked;
+   bool found = false;
+   if (config->sequence.data)
+      return !config->sequence.temporal_id && !config->sequence.spatial_id;
+   probe = rwebm_open_memory_avail(s->buf, s->len, s->avail, NULL);
+   if (!probe)
+      return false;
+   for (walked = 0; walked < RWEBM_VIDEO_MAX_TS; walked++)
+   {
+      rav1_obu_t obu;
+      size_t offset = 0;
+      if (rwebm_read_packet(probe, &packet) != 1)
+         break;
+      if (packet.track != s->track)
+         continue;
+      while (rav1_obu_next(&obu, packet.data, packet.size, &offset, true) == 1)
+      {
+         if (obu.temporal_id || obu.spatial_id)
+            break;
+         if (obu.type == 1)
+         {
+            config->sequence = obu;
+            found = true;
+            break;
+         }
+         if (obu.type != 2 && obu.type != 5 && obu.type != 15)
+            break;
+      }
+      break;
+   }
+   rwebm_close(probe);
+   return found;
+}
+
+static int rwebm_video_av1_open(rwebm_video_stream_t *s)
+{
+   const rwebm_track *t = rwebm_get_track(s->demux, s->track);
+   rav1_config_t config;
+   rav1_sequence_t *seq;
+   unsigned matrix, transfer;
+   if (!t || !rav1_config_parse(&config, t->codec_private,
+            t->codec_private_size) || !rwebm_video_av1_sequence(s, &config))
+      return 0;
+   s->av1 = (rav1_hw_stream_t*)calloc(1, sizeof(*s->av1));
+   if (!s->av1)
+      return 0;
+   rav1_hw_stream_init(s->av1, NULL);
+   seq = &s->av1->sequence;
+   if (!rav1_config_sequence(seq, &config) || seq->max_width != s->width
+         || seq->max_height != s->height || t->colour_range > 2)
+      goto fail;
+   if ((t->primaries && t->primaries != 2 && seq->color_primaries != 2
+            && seq->color_primaries != t->primaries)
+         || (t->matrix_coefficients && t->matrix_coefficients != 2
+            && seq->matrix_coefficients != 2
+            && seq->matrix_coefficients != t->matrix_coefficients)
+         || (t->transfer_characteristics && t->transfer_characteristics != 2
+            && seq->transfer_characteristics != 2
+            && seq->transfer_characteristics != t->transfer_characteristics)
+         || (t->colour_range && (t->colour_range == 2) != seq->color_range))
+      goto fail;
+   matrix = seq->matrix_coefficients != 2 ? seq->matrix_coefficients
+      : (t->matrix_coefficients == 2 ? 0 : t->matrix_coefficients);
+   transfer = seq->transfer_characteristics != 2 ? seq->transfer_characteristics
+      : t->transfer_characteristics;
+   if ((matrix != 0 && matrix != 1 && matrix != 5 && matrix != 6)
+         || transfer == 16 || transfer == 18
+         || !rav1_hw_stream_open_sequence(s->av1))
+      goto fail;
+   s->hw_color.primaries = seq->color_primaries != 2
+      ? seq->color_primaries : t->primaries;
+   s->hw_color.transfer = transfer;
+   s->hw_color.matrix = matrix;
+   s->hw_color.range = seq->color_range ? 2 : 1;
+   s->hw_color.mastering = t->mastering;
+   s->hw_color.max_cll = t->max_cll;
+   s->hw_color.max_fall = t->max_fall;
+   s->hw_yuv_mask = IMAGE_YUV_FLAG_BT709 | IMAGE_YUV_FLAG_FULL_RANGE;
+   s->hw_yuv = seq->color_range ? IMAGE_YUV_FLAG_FULL_RANGE : 0;
+   if (matrix == 1 || (!matrix && s->height >= 720))
+      s->hw_yuv |= IMAGE_YUV_FLAG_BT709;
+   s->hw_want = 1;
+   return 1;
+fail:
+   rav1_hw_stream_close(s->av1);
+   free(s->av1);
+   s->av1 = NULL;
+   return 0;
+}
+
+static int rwebm_video_av1_step(rwebm_video_stream_t *s,
+      int *duration_ms, int discard)
+{
+   video_hw_frame_t frame;
+   int ret;
+   if (!s->av1)
+      return -1;
+   if (!s->pending)
+   {
+      unsigned walked;
+      for (walked = 0; walked < RWEBM_VIDEO_SCAN_SLICE; walked++)
+      {
+         size_t floor = rwebm_consumed(s->demux);
+         ret = rwebm_read_packet(s->demux, &s->pending_packet);
+         if (ret == RWEBM_READ_AGAIN)
+         {
+            s->waiting = 1;
+            return 2;
+         }
+         if (ret != 1)
+            return -1;
+         if (s->pending_packet.track != s->track)
+            continue;
+         s->pending_floor = (size_t)(s->pending_packet.data - s->buf);
+         if (floor < s->pending_floor)
+            s->pending_floor = floor;
+         s->pending_idx = s->pkt_idx++;
+         s->pending = 1;
+         if (rav1_hw_stream_begin(s->av1, s->pending_packet.data,
+                  s->pending_packet.size))
+            return -1;
+         break;
+      }
+      if (!s->pending)
+         return 0;
+   }
+   if ((size_t)(s->pending_packet.data - s->buf) > s->avail
+         || s->pending_packet.size > s->avail
+            - (size_t)(s->pending_packet.data - s->buf))
+   {
+      s->waiting = 1;
+      return 2;
+   }
+   ret = rav1_hw_stream_step(s->av1, &frame, discard != 0);
+   if (ret == RAV1_HW_STREAM_BUSY)
+   {
+      s->waiting = 1;
+      return 2;
+   }
+   if (ret == RAV1_HW_STREAM_END)
+      s->pending = 0;
+   if (ret == RAV1_HW_STREAM_PROGRESS || ret == RAV1_HW_STREAM_END)
+      return 0;
+   if (ret != RAV1_HW_STREAM_FRAME && ret != RAV1_HW_STREAM_DISCARDED)
+      return -1;
+   if (s->hw_untaken)
+      video_hw_frame_abandon(&s->hw_frame);
+   s->hw_untaken = ret == RAV1_HW_STREAM_FRAME;
+   if (s->hw_untaken)
+   {
+      frame.yuv = (frame.yuv & ~s->hw_yuv_mask) | s->hw_yuv;
+      frame.color = s->hw_color;
+      s->hw_frame = frame;
+   }
+   else
+      memset(&s->hw_frame, 0, sizeof(s->hw_frame));
+   if (duration_ms)
+      *duration_ms = rwebm_video_duration_ms(s, s->pending_idx);
+   return 1;
+}
+#endif
+
+int rwebm_video_stream_set_hw(rwebm_video_stream_t *s, int enable)
+{
+#ifdef HAVE_RVP9
+   const rwebm_track *t;
+   rwebm_t *probe;
+   rwebm_packet packet;
+   rvp9_hw_session_t *candidate;
+   rvp9_hw_backend_t backend;
+   rvp9_hw_ops_t ops;
+   size_t sizes[RWEBM_VIDEO_MAX_SUPER];
+   unsigned walked;
+   int found = 0;
+#ifdef HAVE_RAV1
+   if (s && s->codec == RWEBM_CODEC_AV1)
+      return s->av1 ? 1 : (enable ? rwebm_video_av1_open(s) : 0);
+#endif
+   if (!s || s->codec != RWEBM_CODEC_VP9) return 0;
+   if (!enable || s->hw) return s->hw != NULL;
+   t = rwebm_get_track(s->demux, s->track);
+   if (!t || rwebm_video_stream_is_hdr(s) || t->colour_range > 2
+         || !(t->matrix_coefficients == 0 || t->matrix_coefficients == 2
+            || t->matrix_coefficients == 1 || t->matrix_coefficients == 5
+            || t->matrix_coefficients == 6)) return 0;
+   probe = rwebm_open_memory_avail(s->buf, s->len, s->avail, NULL);
+   if (!probe) return 0;
+   candidate = (rvp9_hw_session_t*)calloc(1, sizeof(*candidate));
+   if (!candidate) { rwebm_close(probe); return 0; }
+   for (walked = 0; walked < RWEBM_VIDEO_MAX_TS; walked++)
+   {
+      if (rwebm_read_packet(probe, &packet) != 1) break;
+      if (packet.track != s->track) continue;
+      rwebm_video_vp9_superframe(packet.data, packet.size, sizes, RWEBM_VIDEO_MAX_SUPER);
+      found = !rvp9_parse_frame_header(packet.data, sizes[0], NULL, NULL,
+            &candidate->pending.header);
+      break;
+   }
+   rwebm_close(probe);
+   if (!found || candidate->pending.header.frame_type
+         || candidate->pending.header.w != (int)s->width
+         || candidate->pending.header.h != (int)s->height
+         || !rvp9_hw_backend_open(&candidate->pending.header, 10, &ops, &backend))
+   { free(candidate); return 0; }
+   if (!rvp9_hw_session_init(candidate, &ops, 10))
+   { backend.close(&ops); free(candidate); return 0; }
+   if (s->vp9) { rvp9_free(s->vp9); free(s->vp9); s->vp9 = NULL; }
+   s->hw = candidate; s->hw_backend = backend; s->hw_want = 1;
+   s->hw_color.primaries = t->primaries;
+   s->hw_color.transfer = t->transfer_characteristics;
+   s->hw_color.matrix = t->matrix_coefficients;
+   s->hw_color.range = t->colour_range;
+   s->hw_color.mastering = t->mastering;
+   s->hw_color.max_cll = t->max_cll;
+   s->hw_color.max_fall = t->max_fall;
+   s->hw_yuv_mask = s->hw_yuv = 0;
+   if (t->matrix_coefficients == 1 || t->matrix_coefficients == 5 || t->matrix_coefficients == 6)
+   {
+      s->hw_yuv_mask |= IMAGE_YUV_FLAG_BT709;
+      if (t->matrix_coefficients == 1) s->hw_yuv |= IMAGE_YUV_FLAG_BT709;
+   }
+   if (t->colour_range)
+   {
+      s->hw_yuv_mask |= IMAGE_YUV_FLAG_FULL_RANGE;
+      if (t->colour_range == 2) s->hw_yuv |= IMAGE_YUV_FLAG_FULL_RANGE;
+   }
+   rwebm_rewind(s->demux);
+   s->pkt_idx = s->pending = s->waiting = 0;
+   return 1;
+#else
+#ifdef HAVE_RAV1
+   if (s && s->codec == RWEBM_CODEC_AV1)
+      return s->av1 ? 1 : (enable ? rwebm_video_av1_open(s) : 0);
+#endif
+   (void)s; (void)enable;
+   return 0;
+#endif
+}
+
+int rwebm_video_stream_hw_frame(rwebm_video_stream_t *s, video_hw_frame_t *out)
+{
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+   if (!s || !out || !s->hw_untaken) return 0;
+   *out = s->hw_frame;
+   s->hw_untaken = 0;
+   memset(&s->hw_frame, 0, sizeof(s->hw_frame));
+   return 1;
+#else
+   (void)s; (void)out;
+   return 0;
+#endif
+}
+
+int rwebm_video_stream_waiting(const rwebm_video_stream_t *s)
+{
+   return s && s->waiting;
+}
+
+#ifdef HAVE_RVP9
+static int rwebm_video_hw_step(rwebm_video_stream_t *s, int *duration_ms, int discard)
+{
+   int ret;
+   s->waiting = 0;
+   if (s->pending && s->hw_skip != discard) return -1;
+   if (!s->pending)
+   {
+      size_t offset;
+      int i;
+      if (s->hw_untaken) video_hw_frame_abandon(&s->hw_frame);
+      s->hw_untaken = 0;
+      memset(&s->hw_frame, 0, sizeof(s->hw_frame));
+      for (;;)
+      {
+         size_t floor = rwebm_consumed(s->demux);
+         ret = rwebm_read_packet(s->demux, &s->pending_packet);
+         if (ret == RWEBM_READ_AGAIN) { s->waiting = 1; return 2; }
+         if (ret != 1) return -1;
+         if (s->pending_packet.track != s->track) continue;
+         s->pending_floor = (size_t)(s->pending_packet.data - s->buf);
+         if (floor < s->pending_floor) s->pending_floor = floor;
+         break;
+      }
+      s->super_count = rwebm_video_vp9_superframe(s->pending_packet.data,
+            s->pending_packet.size, s->super_sizes, RWEBM_VIDEO_MAX_SUPER);
+      s->last_show = -1;
+      for (i = 0, offset = 0; i < s->super_count; i++)
+      {
+         if (!s->super_sizes[i] || s->super_sizes[i] > s->pending_packet.size - offset)
+            return -1;
+         /* Profile 0/2: show-existing and show-frame are in the first byte. */
+         if (s->pending_packet.data[offset] & 0x0a) s->last_show = i;
+         offset += s->super_sizes[i];
+      }
+      s->pending_idx = s->pkt_idx++;
+      s->hw_skip = discard;
+      s->super_index = s->submitted = 0; s->super_offset = 0;
+      s->pending = 1;
+   }
+   while (s->super_index < s->super_count)
+   {
+      if (!s->submitted)
+      {
+         ret = rvp9_hw_session_submit(s->hw, s->pending_packet.data + s->super_offset,
+               s->super_sizes[s->super_index]);
+         if (ret == 1) { s->waiting = 1; return 2; }
+         if (ret < 0) return -1;
+         s->submitted = 1;
+      }
+      if (s->hw->output_slot >= 0)
+      {
+         if (discard || s->super_index != s->last_show)
+            rvp9_hw_session_discard_output(s->hw);
+         else
+         {
+            ret = rvp9_hw_session_output(s->hw, &s->hw_frame);
+            if (ret == 1) { s->waiting = 1; return 2; }
+            if (ret < 0) return -1;
+            s->hw_frame.yuv = (s->hw_frame.yuv & ~s->hw_yuv_mask) | s->hw_yuv;
+            s->hw_frame.color = s->hw_color;
+            s->hw_untaken = 1;
+         }
+      }
+      s->super_offset += s->super_sizes[s->super_index++];
+      s->submitted = 0;
+   }
+   s->pending = 0;
+   if (duration_ms) *duration_ms = rwebm_video_duration_ms(s, s->pending_idx);
+   return s->last_show >= 0 ? 1 : 0;
+}
+#endif
+
+static uint32_t *rwebm_video_output(rwebm_video_stream_t *s)
+{
+   if (s->out)
+      return s->out;
+   if (!s->frame)
+      s->frame = (uint32_t*)malloc((size_t)s->width * s->height
+            * sizeof(uint32_t));
+   return s->frame;
+}
+
+/* 1 displayed picture, 0 hidden packet, negative decode failure. */
+static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
+      const rwebm_packet *pkt, int discard)
+{
+   uint32_t *dst;
+   s->is_fp16    = 0;
    /* A decoder can be absent if the re-open in rewind hit OOM. */
    if (!s->vp8
 #ifdef HAVE_RVP9
@@ -858,11 +1334,14 @@ static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
          const rvp9_fb *fb = &s->vp9->fbs[last_show];
          unsigned w = (unsigned)fb->w < s->width  ? (unsigned)fb->w : s->width;
          unsigned h = (unsigned)fb->h < s->height ? (unsigned)fb->h : s->height;
+         if (discard) return 1;
+         if (!(dst = rwebm_video_output(s)))
+            return -1;
          {
             const rwebm_track *ct = rwebm_get_track(s->demux, s->track);
             rwebm_blit_ctx_t c;
             c.dst        = dst;
-            c.dst_stride = s->width;
+            c.dst_stride = s->out && s->out_stride ? s->out_stride : s->width;
             c.w          = w;
             c.y          = fb->y;
             c.u          = fb->u;
@@ -875,7 +1354,16 @@ static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
             c.max_cll    = ct ? ct->max_cll : 0;
             if (s->vp9->hd.bit_depth == 10)
             {
-               if (s->want10)
+               /* An HDR source, for a caller that takes linear light
+                * into its own frame: no tone map. */
+               if (     s->want_fp16 && s->out
+                     && (c.transfer == 16 || c.transfer == 18))
+               {
+                  c.kind     = 3;
+                  c.argb     = 0;
+                  s->is_fp16 = 1;
+               }
+               else if (s->want10)
                {
                   /* Native 10-bit thumbnail: packed XRGB2101010,
                    * SDR-encoded at 10-bit precision (same colour as
@@ -912,10 +1400,13 @@ static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
          return -1;
       if (!shown)
          return 0;
+      if (discard) return 1;
       y = rvp8_video_plane(s->vp8, 0, &ys, &w, &h);
       u = rvp8_video_plane(s->vp8, 1, &uvs, &cw, &ch);
       v = rvp8_video_plane(s->vp8, 2, &uvs, &cw, &ch);
       if (!y || !u || !v)
+         return -1;
+      if (!(dst = rwebm_video_output(s)))
          return -1;
       if ((unsigned)w > s->width)
          w = (int)s->width;
@@ -925,7 +1416,7 @@ static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
          const rwebm_track *ct = rwebm_get_track(s->demux, s->track);
          rwebm_blit_ctx_t c;
          c.dst        = dst;
-         c.dst_stride = s->width;
+         c.dst_stride = s->out && s->out_stride ? s->out_stride : s->width;
          c.w          = (unsigned)w;
          c.y          = y;
          c.u          = u;
@@ -945,29 +1436,47 @@ static int rwebm_video_decode_packet(rwebm_video_stream_t *s,
    return -1;
 }
 
-/* Advance by exactly one of the chosen track's packets (skipping other
- * tracks' packets, which are header reads only).  Returns 1 when a
- * displayed picture is in s->frame (duration written), 0 when the
- * packet decoded but is not displayed, -1 at the end of a pass or on
- * a decode error. */
+/* 1 displayed picture (canvas or GPU lease), 0 hidden packet, 2 retry,
+ * -1 end/error. Other tracks are skipped with header reads only. */
 static int rwebm_video_stream_step(rwebm_video_stream_t *s,
-      int *duration_ms)
+      int *duration_ms, int discard)
 {
    rwebm_packet pkt;
+   s->waiting = 0;
+#ifdef HAVE_RAV1
+   if (s->codec == RWEBM_CODEC_AV1)
+      return rwebm_video_av1_step(s, duration_ms, discard);
+#endif
+#ifdef HAVE_RVP9
+   if (s->hw)
+   {
+      int ret = rwebm_video_hw_step(s, duration_ms, discard);
+      if (ret < 0 && s->hw_untaken)
+      {
+         video_hw_frame_abandon(&s->hw_frame);
+         s->hw_untaken = 0;
+         memset(&s->hw_frame, 0, sizeof(s->hw_frame));
+      }
+      return ret;
+   }
+#endif
 
    for (;;)
    {
       int idx, r;
       r = rwebm_read_packet(s->demux, &pkt);
       if (r == RWEBM_READ_AGAIN)
+      {
+         s->waiting = 1;
          return 2;   /* not yet resident; nothing consumed - retry
                         after rwebm_video_stream_set_avail */
+      }
       if (r != 1)
          break;
       if (pkt.track != s->track)
          continue;
       idx = s->pkt_idx++;
-      r   = rwebm_video_decode_packet(s, &pkt);
+      r   = rwebm_video_decode_packet(s, &pkt, discard);
       if (r < 0)
          return -1;      /* decode error: end the animation */
       if (r == 0)
@@ -979,17 +1488,53 @@ static int rwebm_video_stream_step(rwebm_video_stream_t *s,
    return -1;             /* end of one pass */
 }
 
+static int rwebm_video_stream_advance(rwebm_video_stream_t *s,
+      int *duration_ms, int discard)
+{
+   int ret;
+#ifdef HAVE_RAV1
+   int64_t started = 0;
+#endif
+   if (!s)
+      return -1;
+#ifdef HAVE_RAV1
+   if (s->codec == RWEBM_CODEC_AV1)
+      started = cpu_features_get_time_usec();
+#endif
+   while ((ret = rwebm_video_stream_step(s, duration_ms, discard)) == 0)
+   {
+#ifdef HAVE_RAV1
+      if (s->codec == RWEBM_CODEC_AV1
+            && cpu_features_get_time_usec() - started >= 4000)
+      {
+         s->waiting = 1;
+         return 2;
+      }
+#endif
+   }
+   return ret;
+}
+
 const uint32_t *rwebm_video_stream_next(rwebm_video_stream_t *s,
       int *duration_ms)
 {
-   int r;
-
-   if (!s)
+   if (rwebm_video_stream_advance(s, duration_ms, 0) != 1)
       return NULL;
+#ifdef HAVE_RAV1
+   if (s->codec == RWEBM_CODEC_AV1)
+      return &s->hw_marker;
+#endif
+#ifdef HAVE_RVP9
+   if (s->hw)
+      return &s->hw_marker;
+#endif
+   return s->out ? s->out : s->frame;
+}
 
-   while ((r = rwebm_video_stream_step(s, duration_ms)) == 0)
-      ;                   /* non-shown frame: keep going      */
-   return (r == 1) ? (s->out ? s->out : s->frame) : NULL;
+int rwebm_video_stream_skip(rwebm_video_stream_t *s, int *duration_ms)
+{
+   int ret = rwebm_video_stream_advance(s, duration_ms, 1);
+   return ret > 0 ? ret : 0;
 }
 
 void rwebm_video_stream_rewind(rwebm_video_stream_t *s)
@@ -1002,6 +1547,10 @@ void rwebm_video_stream_rewind(rwebm_video_stream_t *s)
     * reference chain, default probabilities) is the correct state. */
    rwebm_video_stream_close_decoder(s);
    rwebm_video_stream_open_decoder(s);
+   s->waiting = 0;
+#if defined(HAVE_RVP9) || defined(HAVE_RAV1)
+   if (s->hw_want) rwebm_video_stream_set_hw(s, 1);
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -1018,7 +1567,19 @@ void rwebm_video_free(rwebm_video_t *webm)
       return;
    if (webm->stream)
       rwebm_video_stream_close(webm->stream);
+   free(webm->still_fp16);
    free(webm);
+}
+
+void rwebm_video_set_want_fp16(rwebm_video_t *webm, int want)
+{
+   if (webm)
+      webm->want_fp16 = want ? 1 : 0;
+}
+
+bool rwebm_video_is_fp16(const rwebm_video_t *webm)
+{
+   return webm && webm->last_fp16;
 }
 
 rwebm_video_stream_t *rwebm_video_detach_stream(rwebm_video_t *webm)
@@ -1127,7 +1688,7 @@ int rwebm_video_process_image(rwebm_video_t *webm, void **buf,
             webm->stream = NULL;
          }
          if (!(webm->stream = rwebm_video_stream_open_begin(
-               webm->buf, webm->len, avail, &need_more)))
+               webm->buf, webm->len, avail, &need_more, 0)))
             /* The EBML header/Tracks are still arriving: wait for more
              * bytes rather than failing. */
             return need_more ? IMAGE_PROCESS_WAIT : IMAGE_PROCESS_ERROR;
@@ -1164,6 +1725,21 @@ int rwebm_video_process_image(rwebm_video_t *webm, void **buf,
           * holds for the END slice's copy below). */
          webm->stream->want10    = webm->want10;
          webm->stream->emit_argb = supports_rgba ? 0 : 1;
+         /* An HDR source for a caller that takes half floats: the
+          * stream blits the still straight into the frame handed out,
+          * at 8 bytes a pixel. Without the memory it is an ordinary
+          * still. */
+         free(webm->still_fp16);
+         webm->still_fp16 = NULL;
+         if (     webm->want_fp16
+               && rwebm_video_stream_is_hdr(webm->stream)
+               && (webm->still_fp16 = (uint16_t*)malloc(
+                     (size_t)webm->stream->width
+                     * webm->stream->height * 8)))
+         {
+            webm->stream->out       = (uint32_t*)webm->still_fp16;
+            webm->stream->want_fp16 = 1;
+         }
          webm->still_stage       = RWEBM_VIDEO_STILL_DECODE;
          return IMAGE_PROCESS_NEXT;
       }
@@ -1176,7 +1752,7 @@ int rwebm_video_process_image(rwebm_video_t *webm, void **buf,
    }
 
    s = webm->stream;
-   if ((r = rwebm_video_stream_step(s, &duration_ms)) == 0)
+   if ((r = rwebm_video_stream_step(s, &duration_ms, 0)) == 0)
       return IMAGE_PROCESS_NEXT;   /* non-shown frame decoded */
    if (r == 2)
       /* The next block's bytes have not been read yet; nothing was
@@ -1187,17 +1763,32 @@ int rwebm_video_process_image(rwebm_video_t *webm, void **buf,
    frame = s->frame;
 
    webm->last_10bit = s->is10;
+   webm->last_fp16  = s->is_fp16;
 
-   n = (size_t)s->width * s->height;
-   if (!(out = (uint32_t*)malloc(n * sizeof(uint32_t))))
-      goto fail;
+   if (webm->still_fp16)
+   {
+      /* Decoded where it is handed out: half floats from a 10-bit HDR
+       * frame, or the 32-bit words of any other, either way in place.
+       * The stream lets go of it before it plays on as an animation. */
+      out               = (uint32_t*)webm->still_fp16;
+      webm->still_fp16  = NULL;
+      s->out            = NULL;
+      s->want_fp16      = 0;
+   }
+   else
+   {
+      n = (size_t)s->width * s->height;
+      if (!(out = (uint32_t*)malloc(n * sizeof(uint32_t))))
+         goto fail;
 
-   /* The canvas is already in the caller's channel order: 10-bit
-    * output is packed XRGB2101010, and the 8-bit blit emitted ARGB or
-    * ABGR words per supports_rgba (set at the scan/decode transition
-    * above), so the copy is verbatim in every case - the per-pixel
-    * R/B swizzle this replaced was a full extra pass over the frame. */
-   memcpy(out, frame, n * sizeof(uint32_t));
+      /* The canvas is already in the caller's channel order: 10-bit
+       * output is packed XRGB2101010, and the 8-bit blit emitted ARGB
+       * or ABGR words per supports_rgba (set at the scan/decode
+       * transition above), so the copy is verbatim in every case - the
+       * per-pixel R/B swizzle this replaced was a full extra pass over
+       * the frame. */
+      memcpy(out, frame, n * sizeof(uint32_t));
+   }
 
    if (width)
       *width  = s->width;
@@ -1216,5 +1807,7 @@ fail:
    rwebm_video_stream_close(webm->stream);
    webm->stream      = NULL;
    webm->still_stage = RWEBM_VIDEO_STILL_IDLE;
+   free(webm->still_fp16);
+   webm->still_fp16  = NULL;
    return IMAGE_PROCESS_ERROR;
 }

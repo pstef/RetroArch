@@ -118,12 +118,14 @@ const char *font_driver_language_font_file(void) { return NULL; }
 
 void font_driver_bind_block(void *font_data, void *block)
 { (void)font_data; (void)block; }
-void font_driver_free(font_data_t *font) { (void)font; }
-
-/* Retiring a font for a deferred release. No frame clock here and
- * nothing owning a GPU atlas, so this is the same no-op as the free
- * above. */
-void font_driver_free_deferred(font_data_t *font) { (void)font; }
+/* Counted, so a test can tell a font freed here from one handed to
+ * its owner. No GPU atlas behind either. */
+unsigned stub_fonts_freed;
+unsigned stub_fonts_retired;
+void font_driver_free(font_data_t *font)
+{ if (font) stub_fonts_freed++; }
+void font_driver_free_deferred(font_data_t *font)
+{ if (font) stub_fonts_retired++; }
 
 /* Whether the font already loaded is the one being asked for.
  * gfx_display_font_file() below never produces one, so the honest
@@ -223,26 +225,19 @@ float gfx_display_get_dpi_scale(gfx_display_t *p_disp, void *settings_data,
 { (void)p_disp; (void)settings_data; (void)dims;
   (void)fullscreen; (void)is_widget; return 1.0f; }
 
-void gfx_display_texture_loads_cancel(const void *base, size_t len)
-{ (void)base; (void)len; }
-
-bool gfx_display_reset_textures_list_buffer(uintptr_t *item,
-      enum texture_filter_type filter_type, void *buffer,
-      unsigned buffer_len, enum image_type_enum image_type,
-      unsigned *dims)
-{
-   (void)item; (void)filter_type; (void)buffer; (void)buffer_len;
-   (void)image_type;
-   if (dims)
-      *dims = 0;
-   return false;
-}
-
-bool gfx_display_load_icon(const char *fullpath, bool supports_rgba,
-      uintptr_t *target_texture, uint64_t generation,
-      uint64_t *generation_ptr)
-{ (void)fullpath; (void)supports_rgba; (void)target_texture;
-  (void)generation; (void)generation_ptr; return false; }
+/* --- gfx_surface: no texture is ever made here --- */
+gfx_surface_t *gfx_surface_still(gfx_surface_t **slot,
+      enum texture_filter_type filter)
+{ (void)slot; (void)filter; return NULL; }
+bool gfx_surface_submit_path(gfx_surface_t *s, const char *path,
+      bool supports_rgba)
+{ (void)s; (void)path; (void)supports_rgba; return false; }
+bool gfx_surface_submit_buffer(gfx_surface_t *s,
+      enum image_type_enum type, const void *buf, size_t len,
+      bool supports_rgba)
+{ (void)s; (void)type; (void)buf; (void)len; (void)supports_rgba;
+  return false; }
+void gfx_surface_free(gfx_surface_t *s) { (void)s; }
 
 font_data_t *gfx_display_font_file(gfx_display_t *p_disp, char *fontpath,
       float font_size, bool is_threaded)
@@ -267,6 +262,9 @@ static settings_t s_settings;
 settings_t *config_get_ptr(void) { return &s_settings; }
 retro_time_t cpu_features_get_time_usec(void) { return 0; }
 void video_thread_status_text(const char *s) { (void)s; }
+bool video_driver_thread_wrapper_active(void) { return false; }
+bool video_thread_run_queued(custom_command_method_t func, void *data)
+{ (void)func; (void)data; return false; }
 
 /* --- video driver --- */
 uint32_t video_driver_get_disp_flags(void) { return 0; }
@@ -296,4 +294,13 @@ STUB_WIDGET(gfx_widget_netplay_ping);
 bool gfx_surface_wants_rgba(void)
 {
    return false;
+}
+
+/* No frame here carries a core's views, so widgets lay out at the
+ * output size. */
+unsigned video_views_ui_dims(const video_views_layout_t *layout,
+      unsigned dims)
+{
+   (void)layout;
+   return dims;
 }

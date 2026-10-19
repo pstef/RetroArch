@@ -83,10 +83,17 @@ typedef struct gfx_ctx_drm_data
    int interval;
    unsigned fb_width;
    unsigned fb_height;
+   /* Taken when the context is made, which a change of the setting
+    * redoes: swap_buffers runs on the thread that draws */
+   unsigned max_swapchain_images;
    bool core_hw_context_enable;
    bool waiting_for_flip;
    bool leased;
    bool lease_lost;
+   bool async_flip;
+   bool async_flip_refused;
+   /* The vsync setting, latched where the main thread waits */
+   bool video_vsync;
    /* The GPUs the GL GPU index chooses from, as published to the menu */
    struct string_list *gl_gpu_list;
    /* HDR10: what the sink takes, and the connector properties changed
@@ -142,6 +149,7 @@ static unsigned drm_fb_depth               = 24;
 static drmModeModeInfo gfx_ctx_crt_switch_mode;
 static bool switch_mode                   = false;
 
+#ifdef HAVE_MODELINE
 static float mode_vrefresh(drmModeModeInfo *mode)
 {
    return  mode->clock * 1000.00f / (mode->htotal * mode->vtotal);
@@ -163,6 +171,7 @@ static void dump_mode(drmModeModeInfo *mode, int index)
       mode->vtotal,
       mode->clock);
 }
+#endif
 
 static EGLint *gfx_ctx_drm_egl_fill_attribs(
       gfx_ctx_drm_data_t *drm, EGLint *attr)
@@ -556,6 +565,7 @@ static void gfx_ctx_drm_swap_interval(void *data, int interval)
 {
    gfx_ctx_drm_data_t *drm = (gfx_ctx_drm_data_t*)data;
    drm->interval           = interval;
+   drm->video_vsync        = config_get_ptr()->bools.video_vsync;
 
    if (interval > 1)
       RARCH_WARN("[KMS] Swap intervals > 1 currently not supported. Will use swap interval of 1.\n");
@@ -668,6 +678,26 @@ static bool gfx_ctx_drm_queue_flip(gfx_ctx_drm_data_t *drm)
       switch_mode = false;
    }
 
+   /* Vsync off tears, while fast-forward with vsync on drops frames
+    * as Vulkan's MAILBOX does; a refused async flip (a format or
+    * layout change, as around a mode switch) waits for vblank this
+    * once */
+   if (     drm->interval == 0
+         && drm->async_flip
+         && !drm->video_vsync)
+   {
+      if (drmModePageFlip(g_drm_fd, g_crtc_id, fb->fb_id,
+            DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC,
+            &drm->waiting_for_flip) == 0)
+         return true;
+
+      if (!drm->async_flip_refused)
+      {
+         drm->async_flip_refused = true;
+         RARCH_WARN("[KMS] Async page flip refused: %s.\n", strerror(errno));
+      }
+   }
+
    if (drmModePageFlip(g_drm_fd, g_crtc_id, fb->fb_id,
          DRM_MODE_PAGE_FLIP_EVENT, &drm->waiting_for_flip) == 0)
       return true;
@@ -689,8 +719,7 @@ static bool gfx_ctx_drm_queue_flip(gfx_ctx_drm_data_t *drm)
 static void gfx_ctx_drm_swap_buffers(void *data)
 {
    gfx_ctx_drm_data_t        *drm = (gfx_ctx_drm_data_t*)data;
-   settings_t *settings           = config_get_ptr();
-   unsigned max_swapchain_images  = settings->uints.video_max_swapchain_images;
+   unsigned max_swapchain_images  = drm->max_swapchain_images;
 
    /* Recreate the surface */
    if (switch_mode)
@@ -999,7 +1028,8 @@ static void *gfx_ctx_drm_init(void *video_driver)
 
    if (!drm)
       return NULL;
-   drm->fd = -1;
+   drm->fd                   = -1;
+   drm->max_swapchain_images = settings->uints.video_max_swapchain_images;
 
    gpu_descriptors = dir_list_new("/dev/dri", NULL, false, true, false, false);
 
@@ -1093,7 +1123,9 @@ nextgpu:
 
    drm_setup(fd);
 
+#ifdef HAVE_WAYLAND
 have_device:
+#endif
    /* Choose the optimal video mode for get_video_size():
      - video mode issued by switchres through the CRT module
      - custom timings from configuration
@@ -1144,6 +1176,12 @@ have_device:
    g_drm_evctx.page_flip_handler  = drm_flip_handler;
 
    g_drm_fd                       = fd;
+
+   {
+      uint64_t cap                = 0;
+      drm->async_flip             = drmGetCap(fd,
+            DRM_CAP_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
+   }
 
    video_driver_display_type_set(RARCH_DISPLAY_KMS);
 
@@ -1340,6 +1378,7 @@ static bool gfx_ctx_drm_set_video_mode(void *data,
          g_crtc_id, fb->fb_id, 0, 0, &g_connector_id, 1, g_drm_mode)) < 0)
       goto error;
 
+   video_driver_set_hdr_output_mode(drm->hdr10 ? 1 : 0);
    return true;
 
 error:
@@ -1364,12 +1403,11 @@ static void gfx_ctx_drm_destroy(void *data)
 }
 
 static void gfx_ctx_drm_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
    /* no input driver of this context's own: the frontend starts the
     * one that goes with a display that has no window system */
-   input_driver_left_to_frontend(INPUT_WINDOW_KMS, input, input_data);
+   input_driver_video_window(INPUT_WINDOW_KMS, NULL);
 }
 
 static bool gfx_ctx_drm_has_focus(void *data) { return true; }

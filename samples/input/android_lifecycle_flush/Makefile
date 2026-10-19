@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 TARGET := android_lifecycle_flush_test
 
 LIBRETRO_COMM_DIR := ../../../libretro-common
@@ -13,9 +15,9 @@ SOURCES := android_lifecycle_flush_test.c \
            $(LIBRETRO_COMM_DIR)/string/stdstring.c \
            $(LIBRETRO_COMM_DIR)/encodings/encoding_utf.c
 
-OBJS := $(SOURCES:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
-CFLAGS += -Wall -std=gnu89 -g -O1 \
+CFLAGS += -Wall -std=gnu89 -g1 -O1 \
           -D_GNU_SOURCE -DHAVE_THREADS \
           -I$(LIBRETRO_COMM_DIR)/include
 LDFLAGS += -pthread
@@ -34,6 +36,11 @@ check: all
 	./$(TARGET)
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(OBJS) $(TARGET)
 
 .PHONY: all check clean
+
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(COMPILE.c) $(OUTPUT_OPTION) $<

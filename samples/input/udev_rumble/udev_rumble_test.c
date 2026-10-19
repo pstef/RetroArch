@@ -29,7 +29,9 @@ static int      slow_ms;
 /* written on the writer's thread, read on the test's: only through
  * atomic stores and N() below */
 static int      uploads;
+static int      upload_length, fail_upload, fail_play, clock_offset;
 static int      upload_strong, upload_weak, upload_id_in;
+static int      last_strong, last_weak;
 static int      next_id = 1;        /* the writer's thread's alone */
 
 static int test_ioctl(int fd, unsigned long req, void *arg)
@@ -44,25 +46,72 @@ static int test_ioctl(int fd, unsigned long req, void *arg)
          ts.tv_nsec = slow_ms * 1000000L;
          nanosleep(&ts, NULL);
       }
+      __atomic_store_n(&upload_length, e->replay.length, __ATOMIC_SEQ_CST);
+      if (__atomic_exchange_n(&fail_upload, 0, __ATOMIC_SEQ_CST))
+      {
+         __sync_fetch_and_add(&uploads, 1);
+         errno = EIO;
+         return -1;
+      }
       __atomic_store_n(&upload_id_in, e->id, __ATOMIC_SEQ_CST);
       if (e->id < 0)
          e->id = (short)next_id++;
       __atomic_store_n(&upload_strong, e->u.rumble.strong_magnitude, __ATOMIC_SEQ_CST);
       __atomic_store_n(&upload_weak, e->u.rumble.weak_magnitude, __ATOMIC_SEQ_CST);
+      if (e->u.rumble.strong_magnitude)
+         __atomic_store_n(&last_strong, e->u.rumble.strong_magnitude, __ATOMIC_SEQ_CST);
+      if (e->u.rumble.weak_magnitude)
+         __atomic_store_n(&last_weak, e->u.rumble.weak_magnitude, __ATOMIC_SEQ_CST);
       __sync_fetch_and_add(&uploads, 1);
       return 0;
    }
    errno = ENOTTY;
    return -1;
 }
+/* Advance the driver's monotonic clock without changing production
+ * durations. A final short real wait exercises the writer timeout. */
+static int test_clock_gettime(clockid_t id, struct timespec *ts)
+{
+   int ret = clock_gettime(id, ts);
+   if (!ret && id == CLOCK_MONOTONIC)
+   {
+      int offset = __atomic_load_n(&clock_offset, __ATOMIC_SEQ_CST);
+      ts->tv_sec  += offset / 1000;
+      ts->tv_nsec += (offset % 1000) * 1000000L;
+      if (ts->tv_nsec >= 1000000000L)
+      {
+         ts->tv_sec++;
+         ts->tv_nsec -= 1000000000L;
+      }
+   }
+   return ret;
+}
+
+static ssize_t test_write(int fd, const void *buf, size_t count)
+{
+   if (count == sizeof(struct input_event)
+         && ((const struct input_event*)buf)->type == EV_FF
+         && __atomic_exchange_n(&fail_play, 0, __ATOMIC_SEQ_CST))
+   {
+      errno = EIO;
+      return -1;
+   }
+   return write(fd, buf, count);
+}
+#define clock_gettime(id, ts) test_clock_gettime((id), (ts))
+#define write(fd, buf, count) test_write((fd), (buf), (count))
 #define ioctl(fd, req, arg) test_ioctl((fd), (unsigned long)(req), (void*)(arg))
 
 #include "input/drivers_joypad/udev_joypad.c"
+#undef clock_gettime
+#undef write
 
 /* ---- what the driver links against --------------------------------- */
 
 static settings_t stub_settings;
 settings_t *config_get_ptr(void) { return &stub_settings; }
+/* the settings a driver asks for by name, read from the ones above */
+#include "../input_config_stubs.h"
 void RARCH_LOG(const char *fmt, ...) { (void)fmt; }
 void RARCH_DBG(const char *fmt, ...) { (void)fmt; }
 void RARCH_ERR(const char *fmt, ...) { (void)fmt; }
@@ -198,6 +247,34 @@ int main(void)
    CHECK(pad_event(&ev, 500) && ev.value == 0, "the weak motor was not stopped");
    printf("   ok   the weak motor is an effect of its own\n");
 
+   before = N(uploads);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0xffff);
+   udev_set_rumble(0, RETRO_RUMBLE_WEAK, 0xffff);
+   settle(before + 2);
+   CHECK(N(last_strong) == 0xffff && N(last_weak) == 0xffff,
+         "full-strength pair lost a motor or precision");
+   CHECK(pad_event(&ev, 500) && ev.value == 1,
+         "first full-strength motor was not started");
+   CHECK(pad_event(&ev, 500) && ev.value == 1,
+         "second full-strength motor was not started");
+   before = N(uploads);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0x1234);
+   settle(before + 1);
+   CHECK(N(last_strong) == 0x1234 && N(last_weak) == 0xffff,
+         "changing strong corrupted weak");
+   CHECK(!pad_event(&ev, 50), "changing strong stopped or replayed weak");
+   before = N(uploads);
+   udev_set_rumble(0, RETRO_RUMBLE_WEAK, 0x5678);
+   settle(before + 1);
+   CHECK(N(last_strong) == 0x1234 && N(last_weak) == 0x5678,
+         "changing weak corrupted strong");
+   CHECK(!pad_event(&ev, 50), "changing weak stopped or replayed strong");
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0);
+   udev_set_rumble(0, RETRO_RUMBLE_WEAK, 0);
+   CHECK(pad_event(&ev, 500) && ev.value == 0, "first motor did not stop");
+   CHECK(pad_event(&ev, 500) && ev.value == 0, "second motor did not stop");
+   printf("   ok   full-strength pairs preserve independent motor changes\n");
+
 #ifndef HAVE_LAKKA_SWITCH
    /* the gain is written by the writer too */
    CHECK(udev_set_rumble_gain(0, 50), "the gain was refused");
@@ -205,6 +282,10 @@ int main(void)
          && ev.value > 0x7000 && ev.value < 0x9000, "the gain did not arrive");
    printf("   ok   the gain arrives the same way\n");
 #endif
+
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0x6000);
+   CHECK(pad_event(&ev, 500) && ev.value == 1,
+         "effect was not active before hotplug");
 
    /* the pad goes and another comes in its slot: the new one is
     * written to, its effects its own */
@@ -226,6 +307,132 @@ int main(void)
             "the new pad was given the old one's effect");
       printf("   ok   a pad that goes is let go of, and the next one in its slot is written to afresh\n");
    }
+
+   /* No new core post is needed to refresh an unchanged effect. */
+   CHECK(N(upload_length) > 0 && N(upload_length) <= 0x7fff,
+         "replay duration exceeds the documented Linux limit");
+   before = N(uploads);
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_REFRESH_MS - 100, __ATOMIC_SEQ_CST);
+#ifdef HAVE_THREADS
+   input_output_writer_wake(udev_rumble_writer);
+#else
+   usleep(120000);
+   udev_rumble_poll();
+#endif
+   CHECK(pad_event(&ev, 500) && ev.value == 1,
+         "unchanged effect was not refreshed by its deadline");
+   CHECK(N(uploads) == before, "refresh uploaded an unchanged effect");
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0);
+   CHECK(pad_event(&ev, 500) && ev.value == 0, "refreshed effect did not stop");
+   CHECK(!pad_event(&ev, 100), "stopped effect was refreshed");
+
+   /* Failed uploads retry after a deadline, not on unrelated wakes. */
+   before = N(uploads);
+   __atomic_store_n(&fail_upload, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0x3000);
+   settle(before + 1);
+   udev_rumble_wake(0);
+   CHECK(!pad_event(&ev, 50) && N(uploads) == before + 1,
+         "failed upload retried before its backoff elapsed");
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_RETRY_MS - 100, __ATOMIC_SEQ_CST);
+#ifdef HAVE_THREADS
+   input_output_writer_wake(udev_rumble_writer);
+#else
+   usleep(120000);
+   udev_rumble_poll();
+#endif
+   CHECK(pad_event(&ev, 500) && ev.value == 1 && N(uploads) == before + 2,
+         "failed upload did not recover without a new core post");
+
+   /* Failed stops remain pending and recover without a new request. */
+   __atomic_store_n(&fail_play, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0);
+   CHECK(!pad_event(&ev, 50), "injected stop failure did not occur");
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_RETRY_MS - 100, __ATOMIC_SEQ_CST);
+#ifdef HAVE_THREADS
+   input_output_writer_wake(udev_rumble_writer);
+#else
+   usleep(120000);
+   udev_rumble_poll();
+#endif
+   CHECK(pad_event(&ev, 500) && ev.value == 0,
+         "failed stop did not recover without a new request");
+#ifndef HAVE_THREADS
+   CHECK(udev_rumble_timeout(NULL) == -1, "stopped motor retained a deadline");
+#endif
+   /* Cancelling a failed start removes its retry deadline. */
+   before = N(uploads);
+   __atomic_store_n(&fail_upload, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0x4000);
+   settle(before + 1);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0);
+   CHECK(!pad_event(&ev, 50), "cancelled failed start played an effect");
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_RETRY_MS, __ATOMIC_SEQ_CST);
+   udev_rumble_wake(0);
+   CHECK(!pad_event(&ev, 50) && N(uploads) == before + 1,
+         "cancelled failed start retained its retry");
+#ifndef HAVE_THREADS
+   CHECK(udev_rumble_timeout(NULL) == -1, "cancelled start retained a deadline");
+#endif
+
+   /* A failed initial play also retries the configured effect. */
+   __atomic_store_n(&fail_play, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0x5000);
+   CHECK(!pad_event(&ev, 50), "injected start failure did not occur");
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_RETRY_MS - 100, __ATOMIC_SEQ_CST);
+#ifdef HAVE_THREADS
+   input_output_writer_wake(udev_rumble_writer);
+#else
+   usleep(120000);
+   udev_rumble_poll();
+#endif
+   CHECK(pad_event(&ev, 500) && ev.value == 1,
+         "failed initial play did not recover");
+   udev_set_rumble(0, RETRO_RUMBLE_STRONG, 0);
+   CHECK(pad_event(&ev, 500) && ev.value == 0, "recovered start did not stop");
+
+   printf("   ok   valid replay duration, unchanged refresh, bounded upload retry and failed-stop recovery\n");
+
+#ifndef HAVE_LAKKA_SWITCH
+   /* A rejected gain must not be remembered as applied. */
+   __atomic_store_n(&fail_play, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble_gain(0, 100);
+   CHECK(!pad_event(&ev, 50), "injected gain failure did not occur");
+   udev_rumble_wake(0);
+   CHECK(!pad_event(&ev, 50), "failed gain retried before its deadline");
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_RETRY_MS - 100, __ATOMIC_SEQ_CST);
+#ifdef HAVE_THREADS
+   input_output_writer_wake(udev_rumble_writer);
+#else
+   usleep(120000);
+   udev_rumble_poll();
+#endif
+   CHECK(pad_event(&ev, 500) && ev.code == FF_GAIN && ev.value == 0xffff,
+         "failed gain did not recover without a new request");
+
+   __atomic_store_n(&fail_play, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble_gain(0, 25);
+   CHECK(!pad_event(&ev, 50), "second injected gain failure did not occur");
+   udev_set_rumble_gain(0, 75);
+   CHECK(pad_event(&ev, 500) && ev.code == FF_GAIN
+         && ev.value >= 0xbfff && ev.value <= 0xc000,
+         "new gain did not replace the failed request immediately");
+#ifndef HAVE_THREADS
+   CHECK(udev_rumble_timeout(NULL) == -1, "successful gain retained a deadline");
+#endif
+   __atomic_store_n(&fail_play, 1, __ATOMIC_SEQ_CST);
+   udev_set_rumble_gain(0, 25);
+   CHECK(!pad_event(&ev, 50), "cancelled gain failure did not occur");
+   udev_set_rumble_gain(0, 75);
+   CHECK(!pad_event(&ev, 50), "returning to applied gain wrote an event");
+   __atomic_fetch_add(&clock_offset, UDEV_RUMBLE_RETRY_MS, __ATOMIC_SEQ_CST);
+   udev_rumble_wake(0);
+   CHECK(!pad_event(&ev, 50), "cancelled gain retained its retry");
+#ifndef HAVE_THREADS
+   CHECK(udev_rumble_timeout(NULL) == -1, "cancelled gain retained a deadline");
+#endif
+   printf("   ok   gain failures retry with backoff and newer gains replace them\n");
+#endif
 
    /* stopped: the writer ends and lets go of what it held */
    {

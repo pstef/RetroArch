@@ -500,7 +500,6 @@ static const struct
    char s_ccfe26d1[21];
    char s_728ca1d3[5];
    char s_5f612db6[15];
-   char s_9f29f708[19];
    char s_b30b56ad[5];
    char s_2c04084b[22];
    char s_bd84f1a3[9];
@@ -630,6 +629,8 @@ static const struct
    char s_59f183c9[19];
    char s_59dc5d76[26];
    char s_61213f1d[15];
+   char s_caf61308[9];
+   char s_c7a27b20[9];
    char s_57665cff[9];
    char s_0e2c0fca[33];
    char s_93ac5ec8[31];
@@ -640,6 +641,7 @@ static const struct
    char s_6c1369c6[17];
    char s_4d7e9b13[21];
    char s_69b801ef[11];
+   char s_9c535394[9];
    char s_f5911f43[24];
    char s_552163d9[32];
    char s_ef3d53d8[21];
@@ -852,7 +854,6 @@ static const struct
    char s_5deae9b2[122];
    char s_c7c09eb0[81];
    char s_6f122164[43];
-   char s_61942cf6[53];
 #ifdef HAVE_LAKKA
 #ifdef HAVE_RETROFLAG
    char s_96c461f7[125];
@@ -1477,7 +1478,6 @@ static const struct
    "Skala Bilangan Bulat",
    "MATI",
    "Direktori Awal",
-   "Berkas konfigurasi",
    "MATI",
    "Munculkan Layar Mulai",
    "Otomatis",
@@ -1607,6 +1607,8 @@ static const struct
    "Tinggi Layar Penuh",
    "Bingkai Sinkron GPU Keras",
    "Indeks Monitor",
+   "Otomatis",
+   "Otomatis",
    "Keluaran",
    "Perbaikan Lebihan Pindai (Bawah)",
    "Betulkan Lebihan Pindai (Atas)",
@@ -1617,6 +1619,7 @@ static const struct
    "Skala Berjendela",
    "Skala Bilangan Bulat",
    "Penskalaan",
+   "Vertikal",
    "Tundaan Shader Otomatis",
    "Konteks Bagi-Bagi Peranti Keras",
    "Penyaringan Bilinear",
@@ -1852,7 +1855,6 @@ static const struct
    "bah riwayat gerak mundur.",
    "Jumlah laju bingkai saat gerak mundur per langkah. Semakin tinggi semakin cepat.",
    "Atur Direktori Awal untuk Peramban Berkas.",
-   "Berkas konfigurasi bawaan disimpan di direktori ini.",
 #ifdef HAVE_LAKKA
 #ifdef HAVE_RETROFLAG
    "For use with compatible Retroflag case.\"\n#else\n   \"For use with compatible Retroflag case. R"
@@ -2010,7 +2012,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_id_blob_check[
-      (sizeof(msg_hash_id_blob) == (26736u
+      (sizeof(msg_hash_id_blob) == (26691u
 #ifdef HAVE_MIST
        + 10u
 #endif
@@ -2607,7 +2609,6 @@ static const uint32_t msg_hash_id_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_PARTICLE_EFFECT_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_SHOW_START_SCREEN,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_UPSCALE_AUTO,
@@ -2737,6 +2738,8 @@ static const uint32_t msg_hash_id_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HARD_SYNC_FRAMES,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OUTPUT_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_BOTTOM,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_TOP,
@@ -2747,6 +2750,7 @@ static const uint32_t msg_hash_id_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DELAY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHARED_CONTEXT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SMOOTH,
@@ -2959,7 +2963,6 @@ static const uint32_t msg_hash_id_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_BUFFER_SIZE,
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_GRANULARITY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_SUBLABEL_RGUI_CONFIG_DIRECTORY,
 #ifdef HAVE_LAKKA
 #ifdef HAVE_RETROFLAG
    (uint32_t)MENU_ENUM_SUBLABEL_SAFESHUTDOWN_ENABLE,

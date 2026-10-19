@@ -38,9 +38,13 @@ on:
       - 'input/input_driver.h'
       - 'input/input_driver_choice.c'
       - 'input/drivers/winraw_input.c'
+      - 'input/drivers/winraw_mouse_pending.h'
+      - 'input/drivers/winraw_mouse_buttons.h'
       - 'input/drivers_joypad/winraw_joypad.c'
       - 'gfx/common/win32_common.c'
       - 'gfx/common/win32_msg_route.h'
+      - 'gfx/common/win32_ime.h'
+      - 'samples/input/win32_ime/**'
       - 'gfx/display_servers/dispserv_win32.c'
       - 'gfx/drivers/gdi_gfx.c'
       - 'gfx/drivers_context/wgl_ctx.c'
@@ -57,9 +61,13 @@ on:
       - 'input/input_driver.h'
       - 'input/input_driver_choice.c'
       - 'input/drivers/winraw_input.c'
+      - 'input/drivers/winraw_mouse_pending.h'
+      - 'input/drivers/winraw_mouse_buttons.h'
       - 'input/drivers_joypad/winraw_joypad.c'
       - 'gfx/common/win32_common.c'
       - 'gfx/common/win32_msg_route.h'
+      - 'gfx/common/win32_ime.h'
+      - 'samples/input/win32_ime/**'
       - 'gfx/display_servers/dispserv_win32.c'
       - 'gfx/drivers/gdi_gfx.c'
       - 'gfx/video_driver.c'
@@ -107,13 +115,34 @@ jobs:
               $pkgs && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -122,20 +151,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
           restore-keys: |
             ccache-${{ github.workflow }}-${{ github.job }}-
 
+      - name: Build and run win32_ime_test under Wine
+        shell: bash
+        run: |
+          set -eu
+          # The window has its input context (the IME) only while a line
+          # of text is open: gfx/common/win32_ime.h, driven from another
+          # thread as the frontend does, the window asked on its own.
+          Xvfb :97 -screen 0 640x480x24 > /dev/null 2>&1 &
+          trap 'kill $! 2>/dev/null; wineserver -k >/dev/null 2>&1 || true' EXIT
+          export DISPLAY=:97
+          make -C samples/input/win32_ime check
+          make -C samples/input/win32_ime clean
+
+      - name: Build and run winusb_hid_test under Wine
+        shell: bash
+        run: |
+          set -eu
+          # The WinUSB HID driver with the real pad handlers and a
+          # stand-in for winusb.dll: a DualShock 3 started by HID class
+          # requests on the control pipe, the newest report its reader
+          # has had taken at the poll, its Bluetooth address read and
+          # set, and a pad that goes or a driver that stops letting the
+          # reader go.
+          trap 'wineserver -k >/dev/null 2>&1 || true' EXIT
+          make -C samples/input/winusb_hid check
+          make -C samples/input/winusb_hid clean
+
       - name: Build retroarch.exe with mingw-w64 (GDI and raw input, the rest off)
         shell: bash
         run: |
           set -eu
           export CCACHE_DIR="$HOME/.ccache"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
           # What the test runs has to be real: the Win32 window code,
           # the GDI and OpenGL drivers, the raw input drivers, the
@@ -167,3 +226,12 @@ jobs:
           # open.
           trap 'wineserver -k >/dev/null 2>&1 || true' EXIT
           timeout 900 samples/input/windows_wine_smoke/run.sh
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}

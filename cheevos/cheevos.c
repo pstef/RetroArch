@@ -1226,12 +1226,12 @@ bool rcheevos_get_serialized_data(void* buffer)
    return (rc_client_serialize_progress(rcheevos_locals.client, (uint8_t*)buffer) == RC_OK);
 }
 
-bool rcheevos_set_serialized_data(void* buffer)
+bool rcheevos_set_serialized_data(const void* buffer, size_t size)
 {
    if (rcheevos_is_game_loaded() && buffer)
    {
-      const int result = rc_client_deserialize_progress(
-         rcheevos_locals.client, (const uint8_t*)buffer);
+      const int result = rc_client_deserialize_progress_sized(
+         rcheevos_locals.client, (const uint8_t*)buffer, size);
 
       return (result == RC_OK);
    }
@@ -1341,13 +1341,15 @@ static size_t rc_hash_handle_chd_read_sector(
 {
    cdfs_file_t* file = (cdfs_file_t*)track_handle;
    uint32_t track_sectors = cdfs_get_num_sectors(file);
+   int64_t got;
 
    sector -= cdfs_get_first_sector(file);
    if (sector >= track_sectors)
       return 0;
 
    cdfs_seek_sector(file, sector);
-   return cdfs_read_file(file, buffer, requested_bytes);
+   got = cdfs_read_file(file, buffer, requested_bytes);
+   return got > 0 ? (size_t)got : 0;
 }
 
 static uint32_t rc_hash_handle_chd_first_track_sector(

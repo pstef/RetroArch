@@ -41,6 +41,12 @@
  * always available regardless of whether zlib or 7zip is compiled in. */
 #define HAVE_COMPRESSION 1
 
+/* The RAR reader has no dependency either, so it is built wherever the
+ * archive layer is. */
+#ifndef HAVE_RRAR
+#define HAVE_RRAR 1
+#endif
+
 #if defined(HAVE_OPENGL) && defined(HAVE_ANGLE)
 #ifndef HAVE_OPENGLES
 #define HAVE_OPENGLES  1
@@ -131,6 +137,12 @@ ARCHIVE FILE
 
 #ifdef HAVE_RZSTD
 #include "../libretro-common/file/archive_file_zstd.c"
+#endif
+
+#ifdef HAVE_RRAR
+#include "../libretro-common/file/archive_file_rar.c"
+#include "../libretro-common/formats/rar/rrar_archive.c"
+#include "../libretro-common/formats/rar/rrar_ppmd7.c"
 #endif
 
 /*============================================================
@@ -274,6 +286,7 @@ CRYPTO
 
 #include "../gfx/video_driver.c"
 #include "../gfx/common/video_mode_select.c"
+#include "../gfx/video_views.c"
 /*============================================================
 UI COMMON CONTEXT
 ============================================================ */
@@ -293,6 +306,9 @@ VIDEO CONTEXT
 #if defined(_WIN32) && !defined(_XBOX)
 
 #if (defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE) || defined(HAVE_OPENGLES)) && !defined(HAVE_ANGLE)
+#ifndef __WINRT__
+#include "../gfx/common/win_wgl_dxgi.c"
+#endif
 #include "../gfx/drivers_context/wgl_ctx.c"
 #endif
 #if defined(HAVE_VULKAN)
@@ -309,8 +325,17 @@ VIDEO CONTEXT
 
 #if defined(ANDROID)
 #include "../gfx/drivers_context/android_ctx.c"
+#if defined(HAVE_OPENXR)
+#if defined(HAVE_OPENGLES3)
+#include "../gfx/drivers_context/gl_android_openxr_ctx.c"
+#endif
+#include "../deps/openxr/src/xr_generated_dispatch_table_core.c"
+#endif
 #if defined(HAVE_VULKAN)
 #include "../gfx/drivers_context/android_vk_ctx.c"
+#if defined(HAVE_OPENXR)
+#include "../gfx/drivers_context/android_vk_openxr_ctx.c"
+#endif
 #endif
 #include "../gfx/display_servers/dispserv_android.c"
 #elif defined(__QNX__)
@@ -346,8 +371,29 @@ VIDEO CONTEXT
 #ifdef HAVE_VULKAN
 #include "../gfx/common/vulkan_common.c"
 #include "../libretro-common/vulkan/vulkan_symbol_wrapper.c"
+#ifdef HAVE_RMP4
+#include "../gfx/common/vulkan_video_decode.c"
+#endif
+#ifdef HAVE_OPENXR
+#include "../gfx/common/vulkan_openxr.c"
+#endif
 #ifdef HAVE_VULKAN_DISPLAY
 #include "../gfx/drivers_context/khr_display_ctx.c"
+#endif
+#endif
+
+#ifdef HAVE_OPENXR
+/* The headset's units that name no graphics API. */
+#include "../gfx/video_xr.c"
+#include "../gfx/common/openxr_runtime.c"
+#include "../gfx/common/openxr_session.c"
+#include "../gfx/common/openxr_tracking.c"
+#include "../gfx/common/openxr_host.c"
+#include "../gfx/common/openxr_swapchain.c"
+#include "../gfx/common/openxr_frame.c"
+#include "../input/common/input_openxr.c"
+#if defined(ANDROID) && defined(HAVE_OPENGLES3)
+#include "../gfx/common/openxr_binding_gles.c"
 #endif
 #endif
 
@@ -408,6 +454,7 @@ VIDEO SHADERS
 #ifdef HAVE_SLANG
 #include "../gfx/drivers_shader/glslang_util.c"
 #include "../gfx/drivers_shader/slang_cache.c"
+#include "../gfx/drivers_shader/slang_rect.c"
 #include "../gfx/drivers_shader/slang_process.c"
 #endif
 
@@ -450,6 +497,9 @@ VIDEO IMAGE
 ============================================================ */
 
 #include "../libretro-common/formats/image_texture.c"
+#include "../libretro-common/formats/image/image_yuv_blit.c"
+#include "../libretro-common/formats/image_texture_scale.c"
+#include "../libretro-common/formats/image_texture_set.c"
 
 #ifdef HAVE_RTGA
 #include "../libretro-common/formats/tga/rtga.c"
@@ -480,6 +530,7 @@ VIDEO IMAGE
 #endif
 
 #include "../libretro-common/formats/image_transfer.c"
+#include "../libretro-common/formats/video_player.c"
 #include "../libretro-common/formats/data_transfer.c"
 #ifdef HAVE_RPNG
 #include "../libretro-common/formats/png/rpng.c"
@@ -564,6 +615,9 @@ VIDEO IMAGE
 /*============================================================
 VIDEO DRIVER
 ============================================================ */
+#if defined(_WIN32) && (defined(HAVE_D3D) || defined(HAVE_VULKAN))
+#include "../gfx/common/d3d_driver_pacing.c"
+#endif
 #if defined(HAVE_D3D)
 #include "../gfx/common/d3d_common.c"
 
@@ -591,7 +645,26 @@ VIDEO DRIVER
 #include "../gfx/common/d3d11_deferred_proxy.c"
 #endif
 
+#if (defined(HAVE_D3D11) || defined(HAVE_D3D12)) && defined(HAVE_RMP4) \
+ && !defined(__WINRT__)
+#include "../gfx/common/d3d11_video_decode.c"
+#endif
+
 #if defined(HAVE_D3D12)
+#include "../gfx/common/nvenc_d3d12.c"
+#include "../record/record_gpu_queue.c"
+#include "../record/record_gpu_capture_d3d12.c"
+#include "../record/record_gpu_worker_d3d12.c"
+#ifndef HAVE_RAC3
+#include "../libretro-common/formats/ac3/rac3_frame.c"
+#endif
+#include "../record/record_mux_mp4.c"
+#include "../record/record_file_win32.c"
+#ifdef HAVE_RAC3
+#include "../record/record_gpu_output_d3d12.c"
+#include "../record/record_gpu_session_d3d12.c"
+#include "../record/record_gpu_dispatch_d3d12.c"
+#endif
 #include "../gfx/drivers/d3d12.c"
 #endif
 
@@ -842,6 +915,14 @@ INPUT
 #include "../input/drivers_joypad/dinput_joypad.c"
 #endif
 
+#ifdef HAVE_WIN32INPUT
+#include "../input/drivers/win32_input.c"
+#endif
+
+#ifdef HAVE_WINMM_JOYPAD
+#include "../input/drivers_joypad/winmm_joypad.c"
+#endif
+
 #ifdef HAVE_XINPUT
 #ifdef HAVE_DINPUT
 #include "../input/drivers_joypad/xinput_hybrid_joypad.c"
@@ -895,6 +976,14 @@ INPUT (HID)
 
 #if defined(HAVE_LIBUSB) && defined(HAVE_THREADS)
 #include "../input/drivers_hid/libusb_hid.c"
+#endif
+
+#ifdef HAVE_HIDRAW
+#include "../input/drivers_hid/hidraw_hid.c"
+#endif
+
+#if defined(HAVE_WINUSB) && defined(HAVE_THREADS)
+#include "../input/drivers_hid/winusb_hid.c"
 #endif
 
 #ifdef HAVE_BTSTACK
@@ -1096,12 +1185,20 @@ AUDIO
 #include "../audio/drivers/dsound.c"
 #endif
 
+#ifdef HAVE_WAVEOUT
+#include "../audio/drivers/waveout.c"
+#endif
+
 #ifdef HAVE_WASAPI
 #include "../audio/drivers/wasapi.c"
 #endif
 
 #ifdef HAVE_SL
 #include "../audio/drivers/opensl.c"
+#endif
+
+#ifdef HAVE_AAUDIO
+#include "../audio/drivers/aaudio.c"
 #endif
 
 #ifdef HAVE_PIPEWIRE
@@ -1173,6 +1270,7 @@ DRIVERS
 #include "../gfx/gfx_display.c"
 #include "../gfx/gfx_instrument.c"
 #include "../gfx/gfx_surface.c"
+#include "../gfx/gfx_surface_player.c"
 #include "../gfx/gfx_thumbnail.c"
 #include "../gfx/gfx_anim_preview.c"
 
@@ -1278,7 +1376,7 @@ CORES
 #endif
 
 #ifdef HAVE_WEBMPLAYER
-#include "../cores/libretro-webm/webm_core.c"
+#include "../cores/libretro-media/media_core.c"
 #endif
 
 #if defined(HAVE_MPV)
@@ -1379,7 +1477,7 @@ FRONTEND
 #include "../frontend/drivers/platform_psp.c"
 #elif defined(_3DS)
 #include "../frontend/drivers/platform_ctr.c"
-#elif defined(SWITCH) && defined(HAVE_LIBNX)
+#elif defined(SWITCH)
 #include "../frontend/drivers/platform_switch.c"
 #elif defined(XENON)
 #include "../frontend/drivers/platform_xenon.c"
@@ -1387,6 +1485,9 @@ FRONTEND
 #include "../frontend/drivers/platform_qnx.c"
 #elif defined(__linux__) || (defined(BSD) && !defined(__MACH__))
 #include "../frontend/drivers/platform_unix.c"
+#if defined(ANDROID)
+#include "../libretro-common/jni/rjni.c"
+#endif
 #elif defined(DJGPP)
 #include "../frontend/drivers/platform_dos.c"
 #endif
@@ -1472,6 +1573,7 @@ RECORDING
 ============================================================ */
 #include "../record/record_driver.c"
 #include "../record/drivers/record_wav.c"
+#include "../record/drivers/record_nvenc.c"
 #ifdef HAVE_FFMPEG
 #include "../record/drivers/record_ffmpeg.c"
 #endif
@@ -1847,6 +1949,9 @@ CLOUD SYNC
 #ifdef HAVE_SMBCLIENT
 #include "../network/cloud_sync/smb.c"
 #endif
+#ifdef HAVE_NFSCLIENT
+#include "../network/cloud_sync/nfs.c"
+#endif
 #ifdef HAVE_S3
 #include "../network/cloud_sync/s3.c"
 #endif
@@ -1875,4 +1980,13 @@ SMB CLIENT
 #endif
 #if defined(HAVE_SMBCLIENT) || defined(HAVE_NFSCLIENT)
 #include "../libretro-common/vfs/vfs_prefetch.c"
+#endif
+
+#if defined(_WIN32) && !defined(__WINRT__)
+#if defined(HAVE_VULKAN) || defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE) || defined(HAVE_OPENGLES)
+#include "../gfx/common/win_dxgi_present.c"
+#endif
+#ifdef HAVE_VULKAN
+#include "../gfx/common/win_vulkan_dxgi.c"
+#endif
 #endif

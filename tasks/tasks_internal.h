@@ -270,6 +270,23 @@ bool task_push_image_load(const char *fullpath,
       unsigned downscale_cap,
       retro_task_callback_t cb, void *userdata);
 
+enum task_image_load_flags
+{
+   /* Decode in R,G,B,A memory order rather than ARGB words */
+   TASK_IMAGE_LOAD_RGBA = (1 << 0),
+   /* The caller uploads the image and takes RGBA half floats - linear
+    * scRGB, ->fp16 set - which an HDR video still is then decoded as
+    * wherever the driver offers IMAGE_PIXFMT_FP16. Such a still
+    * is never resampled: upscale_threshold and downscale_cap pass it
+    * by. Without the flag no load returns half floats. */
+   TASK_IMAGE_LOAD_HDR  = (1 << 1)
+};
+
+/* task_push_image_load with its options as TASK_IMAGE_LOAD_* bits. */
+bool task_push_image_load_ex(const char *fullpath, unsigned load_flags,
+      unsigned upscale_threshold, unsigned downscale_cap,
+      retro_task_callback_t cb, void *userdata);
+
 /* For an image-load task whose file is a video (WEBM/MP4): take
  * ownership of the decoder stream the still-frame decode left open,
  * positioned just past the first displayed frame, together with the
@@ -295,13 +312,27 @@ bool task_image_detach_video_stream(retro_task_t *task,
  * already answer. */
 int task_image_png_probe(retro_task_t *task);
 
-/* Async icon/texture loading.  generation_ptr must point to a static
- * variable in the calling module (not a heap struct field). */
-bool task_push_icon_load(const char *fullpath,
-      bool supports_rgba,
-      uintptr_t *target_texture,
-      uint64_t generation,
-      uint64_t *generation_ptr);
+/* A set of stills decoded together, across the cores at once: @n
+ * whole files at @paths, decoded and resampled as
+ * task_push_image_load_ex does each. On the main thread @cb is then
+ * called once per file, in order, with the image (NULL when the file
+ * could not be decoded or the set was cancelled; the caller's to free
+ * otherwise), the PNG verdict task_image_png_probe would give, and
+ * that file's @item_uds entry. @tag is the caller's, for
+ * task_image_set_tag. Video files take task_push_image_load_ex: a set
+ * has no decoder stream to hand over. The set decodes in one go on the
+ * task worker, so it is for a threaded task queue only; without one it
+ * would hold the main thread for all of it. */
+typedef void (*task_image_set_cb_t)(struct texture_image *img,
+      int png_probe, void *item_ud);
+bool task_push_image_load_set(const char *const *paths,
+      void *const *item_uds, unsigned n, unsigned load_flags,
+      unsigned upscale_threshold, unsigned downscale_cap,
+      task_image_set_cb_t cb, uint64_t tag);
+
+/* The @tag an image set task was pushed with; false for any other
+ * task. Safe from a task_queue_find predicate. */
+bool task_image_set_tag(retro_task_t *task, uint64_t *tag);
 
 #ifdef HAVE_LIBRETRODB
 /* Scans @fullpath, a directory or a single file, against the content
@@ -450,7 +481,7 @@ bool input_autoconfigure_connect_ex(
 bool input_autoconfigure_disconnect(
       unsigned port, const char *name);
 bool input_autoconfigure_reconnect(unsigned port);
-#ifdef HAVE_TEST_DRIVERS
+#if defined(HAVE_TEST_DRIVERS) || defined(HAVE_OPENXR)
 bool input_autoconfigure_pending(void);
 #endif
 
@@ -480,7 +511,10 @@ extern const char* const input_builtin_autoconfs[];
 
 /* cloud sync tasks */
 void task_push_cloud_sync_update_driver(void);
-void task_push_cloud_sync(void);
+/* The cb parameter is the callback that's called when the sync is done.
+ * Its error argument is non-NULL when the sync failed or finished with
+ * failures or conflicts. Returns false if no sync was queued. */
+bool task_push_cloud_sync(retro_task_callback_t cb, void *user_data);
 void task_push_cloud_sync_resolve_keep_local(void);
 void task_push_cloud_sync_resolve_keep_server(void);
 

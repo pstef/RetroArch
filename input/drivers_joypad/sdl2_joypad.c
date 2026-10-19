@@ -28,6 +28,7 @@
 #define SDL_SUPPORTS_RUMBLE  SDL_VERSION_ATLEAST(2, 0, 9)
 #define SDL_SUPPORTS_SENSORS SDL_VERSION_ATLEAST(2, 0, 14)
 #define SDL_SUPPORTS_HIDAPI_WII SDL_VERSION_ATLEAST(2, 26, 0)
+#define SDL_SUPPORTS_HIDAPI_PS3 SDL_VERSION_ATLEAST(2, 26, 0)
 
 typedef struct _sdl2_joypad
 {
@@ -81,9 +82,32 @@ static int16_t sdl2_pad_get_axis(sdl2_joypad_t *pad, unsigned axis)
 {
    /* TODO: see if a rarch <-> sdl translation is needed. */
    if (pad->controller)
+   {
+      /* SDL's HIDAPI driver for PS3 controllers exposes additional axes
+       * past the Controller API's six, representing pressure sensitive
+       * buttons. */
+      if (axis >= SDL_CONTROLLER_AXIS_MAX)
+      {
+         /* Ensure pressure sensitive buttons rest at 0, like triggers do. */
+         int32_t pressure = SDL_JoystickGetAxis(pad->joypad, axis);
+         return (int16_t)((pressure + 32768) / 2);
+      }
       return SDL_GameControllerGetAxis(pad->controller, (SDL_GameControllerAxis)axis);
+   }
    return SDL_JoystickGetAxis(pad->joypad, axis);
 }
+
+#if SDL_SUPPORTS_HIDAPI_PS3
+static bool sdl2_pad_has_pressure_axes(sdl2_joypad_t *pad,
+      int32_t vendor, int32_t product)
+{
+   /* 0x054c/0x0268 is a PS3 controller. */
+   return vendor  == 0x054c
+       && product == 0x0268
+       && SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI_PS3, SDL_FALSE)
+       && SDL_JoystickNumAxes(pad->joypad) > SDL_CONTROLLER_AXIS_MAX;
+}
+#endif
 
 static void sdl2_pad_connect(unsigned id)
 {
@@ -169,6 +193,14 @@ static void sdl2_pad_connect(unsigned id)
       pad->num_buttons = SDL_CONTROLLER_BUTTON_MAX;
       pad->num_hats    = 1;
       pad->num_balls   = 0;
+#if SDL_SUPPORTS_HIDAPI_PS3
+      if (sdl2_pad_has_pressure_axes(pad, vendor, product))
+      {
+         pad->num_axes = SDL_JoystickNumAxes(pad->joypad);
+         RARCH_LOG("[SDL] Pad #%u: reading %u pressure-sensitive button axes.\n",
+               id, pad->num_axes - SDL_CONTROLLER_AXIS_MAX);
+      }
+#endif
 
       /* SDL Device supports Game Controller API. */
    }
@@ -413,7 +445,8 @@ static int16_t sdl2_joypad_axis(unsigned port, uint32_t joyaxis)
 
 static int16_t sdl2_joypad_state(
       rarch_joypad_info_t *joypad_info,
-      const struct retro_keybind *binds,
+      const uint16_t *joykeys,
+      const uint32_t *joyaxes,
       unsigned port)
 {
    int i;
@@ -428,11 +461,8 @@ static int16_t sdl2_joypad_state(
 
    for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
    {
-      /* Auto-binds are per joypad, not per user. */
-      const uint64_t joykey  = (binds[i].joykey != NO_BTN)
-         ? binds[i].joykey  : joypad_info->auto_binds[i].joykey;
-      const uint32_t joyaxis = (binds[i].joyaxis != AXIS_NONE)
-         ? binds[i].joyaxis : joypad_info->auto_binds[i].joyaxis;
+      const uint64_t joykey  = joykeys[i];
+      const uint32_t joyaxis = joyaxes[i];
       if (
                (uint16_t)joykey != NO_BTN
             && sdl2_joypad_button_state(pad, port_idx, (uint16_t)joykey)
@@ -475,14 +505,13 @@ static bool sdl2_joypad_set_rumble(unsigned pad, enum retro_rumble_effect effect
    SDL_HapticEffect efx;
    sdl2_joypad_t *joypad = (sdl2_joypad_t*)&sdl2_pads[pad];
 
-   memset(&efx, 0, sizeof(efx));
-
    if (!joypad->joypad)
       return false;
 
-   efx.type             = SDL_HAPTIC_LEFTRIGHT;
-   efx.leftright.type   = SDL_HAPTIC_LEFTRIGHT;
-   efx.leftright.length = 5000;
+   efx.leftright.type            = SDL_HAPTIC_LEFTRIGHT;
+   efx.leftright.length          = 5000;
+   efx.leftright.large_magnitude = 0;
+   efx.leftright.small_magnitude = 0;
 
    switch (effect)
    {

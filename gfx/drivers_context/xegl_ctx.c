@@ -540,12 +540,11 @@ error:
 }
 
 static void gfx_ctx_xegl_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
    /* no input driver of this context's own: the frontend starts the
     * one that goes with an X11 window */
-   input_driver_left_to_frontend(INPUT_WINDOW_X11, input, input_data);
+   input_driver_video_window(INPUT_WINDOW_X11, NULL);
 }
 
 static enum gfx_ctx_api gfx_ctx_xegl_get_api(void *data) { return xegl_api; }
@@ -601,6 +600,18 @@ static void gfx_ctx_xegl_release_current(void *data)
    (void)data;
 #endif
 }
+
+#ifdef HAVE_EGL
+static bool gfx_ctx_xegl_shared_context_new(void *data,
+      gfx_ctx_shared_context_t *out)
+{
+   xegl_ctx_data_t *xegl = (xegl_ctx_data_t*)data;
+   memset(out, 0, sizeof(*out));
+   if (!xegl || xegl_api != GFX_CTX_OPENGL_API)
+      return false;
+   return egl_shared_context_new(&xegl->egl, EGL_OPENGL_API, out);
+}
+#endif
 
 static void gfx_ctx_xegl_bind_hw_render(void *data, bool enable)
 {
@@ -721,5 +732,14 @@ const gfx_ctx_driver_t gfx_ctx_x_egl =
    gfx_ctx_xegl_destroy_surface,
    x11_presentable,
    NULL, /* last_present_time */
-   gfx_ctx_xegl_release_current
+   gfx_ctx_xegl_release_current,
+#ifdef HAVE_EGL
+   gfx_ctx_xegl_shared_context_new,
+   egl_shared_context_bind,
+   egl_shared_context_free
+#else
+   NULL, /* shared_context_new */
+   NULL, /* shared_context_bind */
+   NULL  /* shared_context_free */
+#endif
 };

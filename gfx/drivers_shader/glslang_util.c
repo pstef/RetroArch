@@ -13,11 +13,13 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 #include <retro_miscellaneous.h>
 #include <compat/intrinsics.h>
+#include <compat/strl.h>
 #include <string/stdstring.h>
 
 #ifdef HAVE_CONFIG_H
@@ -609,6 +611,56 @@ bool glslang_read_shader_pragmas_cached(const char *path,
    }
 }
 
+void glslang_last_pass_init(const struct video_shader *shader,
+      void *cache, struct glslang_last_pass *state)
+{
+   size_t k;
+   const struct video_shader_pass *pass;
+   struct shader_line_buf lines;
+   void *own = NULL;
+   memset(state, 0, sizeof(*state));
+   if (!shader || !shader->passes)
+      return;
+   state->index = shader->passes - 1;
+   pass = &shader->pass[state->index];
+   if (!(pass->fbo.flags & FBO_SCALE_FLAG_VALID))
+      return;
+   state->needs_target = true;
+   if (!GFX_FBO_SCALE_IS_VIEWPORT(&pass->fbo))
+      return;
+   if (!cache && !(cache = own = glslang_include_cache_new()))
+      return;
+   strlcpy(state->name, pass->alias, sizeof(state->name));
+   if (!shader_line_buf_init(&lines))
+      goto end;
+   if (!glslang_read_shader_pragmas_cached(pass->source.path, &lines, cache))
+   {
+      shader_line_buf_free(&lines);
+      goto end;
+   }
+   state->needs_target = false;
+   for (k = 0; k < lines.num_lines; k++)
+   {
+      const char *line = shader_line_buf_get(&lines, k);
+      if (!line)
+         continue;
+      if (!memcmp(line, "#pragma format ", sizeof("#pragma format ") - 1))
+         state->needs_target = true;
+      if (!state->name[0]
+            && !memcmp(line, "#pragma name ", sizeof("#pragma name ") - 1))
+      {
+         const char *name = line + sizeof("#pragma name ") - 1;
+         while (*name == ' ' || *name == '\t')
+            name++;
+         strlcpy(state->name, name, sizeof(state->name));
+      }
+   }
+   shader_line_buf_free(&lines);
+   state->inspect_feedback = !state->needs_target;
+end:
+   glslang_include_cache_free(own);
+}
+
 static bool glslang_read_shader_file_internal(const char *path,
       struct shader_line_buf *output, bool root_file, bool is_optional,
       struct slang_include_cache *cache, bool pragmas_only)
@@ -652,13 +704,6 @@ static bool glslang_read_shader_file_internal(const char *path,
    if (!basename || basename[0] == '\0')
       return false;
 
-   if (!(scratch = (void*)malloc(sizeof(*scratch))))
-      return false;
-
-   tmp         = scratch->tmp;
-   line_suffix = scratch->line_suffix;
-   tmp[0]      = '\0';
-
    /* An include expands to the same lines wherever it appears: the
     * '#line' directive that returns to the parent's position is
     * written by the parent after the call below, and nothing else
@@ -667,7 +712,8 @@ static bool glslang_read_shader_file_internal(const char *path,
     * copy of it.  A file that does include is left out: its run is
     * mostly the runs of the leaves below it, which are captured on
     * their own, and holding a second copy of them costs far more
-    * memory than the scan it would save. */
+    * memory than the scan it would save.  A copy needs none of the
+    * scratch below, so the cache is asked before it is allocated. */
    if (!root_file && cache)
    {
       struct slang_include_cache_entry *hit =
@@ -685,6 +731,13 @@ static bool glslang_read_shader_file_internal(const char *path,
       cap_len   = output->len;
       cap_lines = output->num_lines;
    }
+
+   if (!(scratch = (void*)malloc(sizeof(*scratch))))
+      return false;
+
+   tmp         = scratch->tmp;
+   line_suffix = scratch->line_suffix;
+   tmp[0]      = '\0';
 
    /* Precompute the #line directive suffix: ' "basename"'
     * so the inner loop only needs to write the line number. */

@@ -25,6 +25,7 @@ HAVE_RETRONFS := 1
 # MODELINE, so the CRT SwitchRes menu stays hidden); this is for the
 # EDID reader behind Information > Display Information > EDID.
 HAVE_MODELINE := 1
+HAVE_OPENXR ?= 0
 
 INCFLAGS    :=
 DEFINES     :=
@@ -110,6 +111,10 @@ LOGGER_LDLIBS := -llog
 ifeq ($(GLES),3)
    GLES_LIB := -lGLESv3
    DEFINES += -DHAVE_OPENGLES3
+   # Every OpenXR headset's driver supports OpenGL ES 3.2
+   ifeq ($(HAVE_OPENXR),1)
+      DEFINES += -DHAVE_OPENGLES3_1 -DHAVE_OPENGLES3_2
+   endif
 else
    GLES_LIB := -lGLESv2
    DEFINES += -DHAVE_OPENGLES2
@@ -178,6 +183,7 @@ DEFINES += -DRARCH_MOBILE \
 	   -DHAVE_RFLAC \
 	   -DHAVE_RMP3 \
 	   -DHAVE_CHD \
+	   -DHAVE_RCHD \
 	   -DWANT_SUBCODE \
 	   -DWANT_RAW_DATA_SECTOR \
 	   -DHAVE_RUNAHEAD \
@@ -207,9 +213,12 @@ DEFINES += -DHAVE_VULKAN \
 	   -DWANT_GLSLANG \
 	   -D__STDC_LIMIT_MACROS
 endif
+
 DEFINES += -DHAVE_7ZIP \
 	   \
-	   -DHAVE_SL
+	   -DHAVE_SL \
+	   -DHAVE_AAUDIO \
+	   -DHAVE_RAC3
 
 ifeq ($(HAVE_CHEEVOS),1)
 DEFINES += -DHAVE_CHEEVOS \
@@ -222,6 +231,10 @@ endif
 
 ifeq ($(HAVE_RETRONFS),1)
    DEFINES += -DHAVE_NFSCLIENT -DHAVE_RETRONFS
+endif
+
+ifeq ($(HAVE_OPENXR),1)
+DEFINES += -DHAVE_OPENXR -DXR_OS_ANDROID -DXR_USE_PLATFORM_ANDROID
 endif
 
 LOCAL_CFLAGS   += -Wall -std=gnu99 -pthread -Wno-unused-function -fno-stack-protector -funroll-loops $(DEFINES)
@@ -239,6 +252,17 @@ LOCAL_C_INCLUDES := \
 INCLUDE_DIRS     := \
 		    -I$(LOCAL_PATH)/$(DEPS_DIR)/stb/ \
 		    -I$(LOCAL_PATH)/$(DEPS_DIR)/7zip/
+
+ifeq ($(HAVE_OPENXR),1)
+OPENXR_DIR := $(RARCH_DIR)/deps/openxr
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/$(OPENXR_DIR)/include \
+		    $(LOCAL_PATH)/$(OPENXR_DIR)/src \
+		    $(LOCAL_PATH)/$(OPENXR_DIR)/src/common \
+		    $(LOCAL_PATH)/$(OPENXR_DIR)/src/loader
+# The vendored OpenXR loader is C++17; later -std wins over the global
+# gnu++11 above, and the rest of the C++ in this build compiles as 17.
+LOCAL_CPPFLAGS += -std=gnu++17
+endif
 
 ifeq ($(HAVE_CHEEVOS),1)
 INCLUDE_DIRS += -I$(LOCAL_PATH)/$(DEPS_DIR)/rcheevos/include

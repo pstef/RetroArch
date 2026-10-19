@@ -125,9 +125,9 @@ bool gfx_anim_preview_mem_ok(gfx_anim_preview_t *p, uint64_t px)
 int gfx_anim_preview_probe(const char *path)
 {
    enum image_type_enum type;
-   uint8_t head[4096];
+   uint8_t *head;
    int64_t got;
-   int more = 0;
+   int more = 0, result = 0;
    RFILE *fp;
 
    if (string_is_empty(path))
@@ -140,25 +140,49 @@ int gfx_anim_preview_probe(const char *path)
    if (!(fp = filestream_open(path,
          RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE)))
       return -1;
+   head = (uint8_t*)malloc(type == IMAGE_TYPE_PNG ? 4096 : 32);
+   if (!head)
+   {
+      filestream_close(fp);
+      return -1;
+   }
    got = filestream_read(fp, head, (type == IMAGE_TYPE_PNG) ? 4096 : 32);
    filestream_close(fp);
    if (got <= 0)
+   {
+      free(head);
       return -1;
+   }
 #ifdef HAVE_RPNG
    if (type == IMAGE_TYPE_PNG)
-      return rpng_is_apng_ex(head, (size_t)got, &more) ? 1 : 0;
+      result = rpng_is_apng_ex(head, (size_t)got, &more) ? 1 : 0;
 #endif
 #ifdef HAVE_RWEBP
    if (type == IMAGE_TYPE_WEBP)
-      return rwebp_is_animated_ex(head, (size_t)got, &more) ? 1 : 0;
+      result = rwebp_is_animated_ex(head, (size_t)got, &more) ? 1 : 0;
 #endif
    (void)more;
-   return 0;
+   free(head);
+   return result;
 }
 
 /* --- open ------------------------------------------------------------------ */
 
+static gfx_anim_preview_t *gfx_anim_preview_open_internal(const char *path,
+      int png_probe, bool hardware);
+
 gfx_anim_preview_t *gfx_anim_preview_open(const char *path, int png_probe)
+{
+   return gfx_anim_preview_open_internal(path, png_probe, false);
+}
+
+gfx_anim_preview_t *gfx_anim_preview_open_hw(const char *path, int png_probe)
+{
+   return gfx_anim_preview_open_internal(path, png_probe, true);
+}
+
+static gfx_anim_preview_t *gfx_anim_preview_open_internal(const char *path,
+      int png_probe, bool hardware)
 {
    enum image_type_enum type;
    gfx_anim_preview_t *p;
@@ -265,9 +289,14 @@ gfx_anim_preview_t *gfx_anim_preview_open(const char *path, int png_probe)
          avail = blen;
       for (;;)
       {
-         stream = image_transfer_anim_stream_new_avail(
-               (void*)base, blen, avail, type, &need_more,
-               &need_lo, &need_hi);
+         if (hardware)
+            stream = image_transfer_anim_stream_new_hw_avail(
+                  (void*)base, blen, avail, type, &need_more,
+                  &need_lo, &need_hi);
+         else
+            stream = image_transfer_anim_stream_new_avail(
+                  (void*)base, blen, avail, type, &need_more,
+                  &need_lo, &need_hi);
          if (stream || !need_more || avail >= blen)
             break;
          if (need_hi > need_lo && need_hi > avail && need_hi <= blen)
@@ -610,6 +639,13 @@ static void gfx_anim_preview_audio_stop_slot(gfx_anim_preview_t *p)
    p->audio_tell = 0;
    p->audio_slot = -1;
 }
+
+static size_t gfx_anim_preview_audio_lookahead(const gfx_anim_preview_t *p)
+{
+   /* Audio demuxing also walks the interleaved video packets. */
+   return p->feed_ahead > GFX_ANIM_PREVIEW_AUDIO_LOOKAHEAD
+      ? p->feed_ahead : GFX_ANIM_PREVIEW_AUDIO_LOOKAHEAD;
+}
 #endif
 
 void gfx_anim_preview_audio_begin(gfx_anim_preview_t *p)
@@ -617,7 +653,7 @@ void gfx_anim_preview_audio_begin(gfx_anim_preview_t *p)
 #if defined(GFX_ANIM_PREVIEW_AUDIO)
    gfx_anim_preview_audio_win_t *w;
    const uint8_t *base = NULL;
-   size_t blen = 0, floor_off, keep, island_hi = 0;
+   size_t blen = 0, floor_off, keep, island_hi = 0, prime_hi, ahead;
 
    if (!p || !p->stream || !p->path || !*p->path)
       return;
@@ -698,7 +734,20 @@ void gfx_anim_preview_audio_begin(gfx_anim_preview_t *p)
       gfx_anim_preview_audio_win_release(w);
       return;
    }
-   p->audio_hi = island_hi ? blen : ((keep < blen) ? keep : blen);
+   ahead = gfx_anim_preview_audio_lookahead(p);
+   prime_hi = floor_off > (size_t)-1 - ahead
+      ? (size_t)-1 : floor_off + ahead;
+   if (prime_hi > blen)
+      prime_hi = blen;
+   if (prime_hi < keep)
+      prime_hi = keep < blen ? keep : blen;
+   data_transfer_window_rebase(w->dt, floor_off);
+   if (!data_transfer_window_extend(w->dt, prime_hi))
+   {
+      gfx_anim_preview_audio_win_release(w);
+      return;
+   }
+   p->audio_hi = island_hi ? blen : prime_hi;
 
    {
       audio_mixer_stream_params_t params;
@@ -733,7 +782,7 @@ void gfx_anim_preview_audio_begin(gfx_anim_preview_t *p)
       p->audio_dt   = w->dt;
       p->audio_slot = out_slot;
       if (island_hi)
-         p->audio_hi = (keep < blen) ? keep : blen;
+         p->audio_hi = prime_hi;
       /* Every windowed stream decodes under a bound from its first
        * read: without one the decoder trusts the demuxer's offsets
        * outright, and the first lap's end shows why that cannot be -
@@ -759,20 +808,25 @@ bool gfx_anim_preview_audio_feed(gfx_anim_preview_t *p)
    if (tell >= 0)
    {
       size_t anchor = (size_t)tell;
-      size_t hi     = (anchor > (size_t)-1 - GFX_ANIM_PREVIEW_AUDIO_LOOKAHEAD)
-                    ? (size_t)-1 : anchor + GFX_ANIM_PREVIEW_AUDIO_LOOKAHEAD;
+      size_t ahead  = gfx_anim_preview_audio_lookahead(p);
+      size_t hi     = (anchor > (size_t)-1 - ahead)
+                    ? (size_t)-1 : anchor + ahead;
       size_t res_hi = 0;
+      size_t budget = GFX_ANIM_PREVIEW_AUDIO_FEED_BUDGET;
       if (hi > p->len)
          hi = p->len;
       /* The decoder looped: it stands at the wall until this tick has
        * brought the head back and published a bound for the new lap,
        * so the bound published for the old lap counts for nothing. */
       if (anchor < p->audio_tell)
+      {
          p->audio_hi = 0;
+         budget = 0;
+      }
       p->audio_tell = anchor;
       if (!data_transfer_window_feed_budget(p->audio_dt, anchor,
-               GFX_ANIM_PREVIEW_AUDIO_LOOKAHEAD, GFX_ANIM_PREVIEW_AUDIO_MARGIN,
-               GFX_ANIM_PREVIEW_AUDIO_FEED_BUDGET, &res_hi))
+               ahead, GFX_ANIM_PREVIEW_AUDIO_MARGIN,
+               budget, &res_hi))
       {
          /* the window cannot be maintained: stop rather than play
           * against a frozen one */

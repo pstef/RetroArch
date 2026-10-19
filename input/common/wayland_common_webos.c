@@ -262,6 +262,14 @@ static void wl_registry_handle_global_webos(void *data,
       if (!si)
          return;
       si->seat = (struct wl_seat*)wl_registry_bind(reg, id, &wl_seat_interface, MIN(version, 4));
+      /* The seat goes on the input queue, and the keyboard and pointer
+       * made from it follow it there, so only the input driver's poll
+       * handles their events (wayland_input_dispatch()). Nothing has
+       * been read off the connection since the bind - this is the
+       * registry's handler - so no event of the seat's is on the
+       * default queue. */
+      if (wl->input.queue)
+         wl_proxy_set_queue((struct wl_proxy*)si->seat, wl->input.queue);
       si->global_id = id;
       si->wl = wl;
       wl_seat_add_listener(si->seat, &webos_seat_listener, si);
@@ -451,6 +459,12 @@ void gfx_ctx_wl_destroy_resources_webos(gfx_ctx_wayland_data_t *wl)
    if (wl->registry)
       wl_registry_destroy(wl->registry);
 
+   /* after the seats and their devices, which were on it, and before
+    * the connection */
+   if (wl->input.queue)
+      wl_event_queue_destroy(wl->input.queue);
+   wl->input.queue              = NULL;
+
    if (wl->input.dpy)
    {
       wl_display_flush(wl->input.dpy);
@@ -522,6 +536,18 @@ bool gfx_ctx_wl_init_webos(
 
    wl->input.dpy       = wl_display_connect(NULL);
    wl->buffer_scale    = 1;
+   /* The seat's events get a queue of their own, which only the input
+    * driver's poll dispatches, as on other Wayland compositors.
+    * RETROARCH_WAYLAND_INPUT_QUEUE=0 in the environment leaves them on
+    * the default queue, where with threaded video the video thread and
+    * the poll both dispatched them. */
+   wl->input.queue     = NULL;
+   if (wl->input.dpy)
+   {
+      const char *off = getenv("RETROARCH_WAYLAND_INPUT_QUEUE");
+      if (!off || off[0] != '0')
+         wl->input.queue = wl_display_create_queue(wl->input.dpy);
+   }
    wl->floating_dims   = VIDEO_SCALE_PACK(DEFAULT_WINDOW_WIDTH,
          DEFAULT_WINDOW_HEIGHT);
 
@@ -539,6 +565,16 @@ bool gfx_ctx_wl_init_webos(
    wl_display_dispatch(wl->input.dpy);
    /* second roundtrip for listeners on bound globals (wl_output, wl_seat) */
    wl_display_roundtrip(wl->input.dpy);
+   /* the seat's events that roundtrip read were sorted into the input
+    * queue: its capabilities, and with them the keyboard and the
+    * pointer, are wanted before the window is set up. The input driver
+    * is not polling yet, so nothing else dispatches this queue. */
+   if (wl->input.queue)
+   {
+      wl_display_dispatch_queue_pending(wl->input.dpy, wl->input.queue);
+      wl_display_roundtrip(wl->input.dpy);
+      wl_display_dispatch_queue_pending(wl->input.dpy, wl->input.queue);
+   }
 
    if (!wl->compositor)
    {
@@ -690,7 +726,6 @@ static bool screenSaverCallback(LSHandle* sh, LSMessage* reply, void* context)
    enum rjson_type t;
    HContext response_ctx;
    bool suspend_screensaver;
-   settings_t *settings;
    rjsonwriter_t *w = NULL;
    rjson_t *json    = NULL;
    const char *key  = NULL, *val = NULL;
@@ -728,8 +763,7 @@ static bool screenSaverCallback(LSHandle* sh, LSMessage* reply, void* context)
    if (strcmp(state, "Active") != 0)
       return true;
 
-   settings            = config_get_ptr();
-   suspend_screensaver = settings->bools.ui_suspend_screensaver_enable;
+   suspend_screensaver = input_config_get_suspend_screensaver_enable();
 
    w                   = rjsonwriter_open_memory();
    rjsonwriter_raw(w, "{", 1);
@@ -826,7 +860,6 @@ void wl_keyboard_handle_key_webos(void *data,
    int value = (state == WL_KEYBOARD_KEY_STATE_PRESSED) ? 1 : 0;
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
    uint32_t keysym            = key;
-   input_driver_state_t *input_st = input_state_get_ptr();
 
    /* Handle 'duplicate' inputs that correspond
     * to the same RETROK_* key */
@@ -866,7 +899,7 @@ void wl_keyboard_handle_key_webos(void *data,
 
    /* OSK: D-pad / Enter navigate and confirm the grid; do not inject
     * text-cursor moves or '\n' line submission from those keys. */
-   if (input_st && (input_st->flags & INP_FLAG_KB_MAPPING_BLOCKED))
+   if (input_driver_text_entry_active())
    {
       switch (keysym)
       {

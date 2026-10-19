@@ -7,6 +7,9 @@
  * it, and the message is UTF-8. Each check maps every inked texel of a
  * glyph in the atlas to the surface pixel it has to land on.
  *
+ * The OSD and raster fonts' textures, which take only the atlas region
+ * new glyphs went into, are checked against the atlas texel for texel.
+ *
  * sdl2_gfx.c is included here; the rest of the driver is never called,
  * and its frontend references are left unresolved at link time. */
 #include <stdio.h>
@@ -67,11 +70,11 @@ static int glyph_lands(uint32_t code, int pen_x, int pen_y, int *missing)
       (*missing)++;
       return 0;
    }
-   for (v = 0; v < g->height; v++)
-      for (u = 0; u < g->width; u++)
+   for (v = 0; v < VIDEO_SCALE_H(g->dims); v++)
+      for (u = 0; u < VIDEO_SCALE_W(g->dims); u++)
       {
-         if (!atlas->buffer[(size_t)(g->atlas_offset_y + v) * atlas->width
-               + g->atlas_offset_x + u])
+         if (!atlas->buffer[(size_t)(VIDEO_SCALE_H(g->atlas_pos) + v)
+               * atlas->width + VIDEO_SCALE_W(g->atlas_pos) + u])
             continue;
          if (lit(pen_x + g->draw_offset_x + (int)u, pen_y + g->draw_offset_y + (int)v))
             found++;
@@ -79,6 +82,44 @@ static int glyph_lands(uint32_t code, int pen_x, int pen_y, int *missing)
             (*missing)++;
       }
    return found;
+}
+
+/* Whether @tex holds atlas @a: drawn a tile at a time over black with
+ * its own blending, white, each channel of a pixel is the atlas's
+ * coverage there */
+static int tex_matches(SDL_Texture *tex, const struct font_atlas *a)
+{
+   unsigned tx, ty, x, y;
+   int bad = 0;
+   for (ty = 0; ty < a->height; ty += SURF_H)
+      for (tx = 0; tx < a->width; tx += SURF_W)
+      {
+         SDL_Rect src, dst;
+         src.x = (int)tx;
+         src.y = (int)ty;
+         src.w = (int)(a->width  - tx < SURF_W ? a->width  - tx : SURF_W);
+         src.h = (int)(a->height - ty < SURF_H ? a->height - ty : SURF_H);
+         dst.x = 0;
+         dst.y = 0;
+         dst.w = src.w;
+         dst.h = src.h;
+         clear_surface();
+         SDL_RenderCopy(vid_st.renderer, tex, &src, &dst);
+         for (y = 0; y < (unsigned)src.h; y++)
+            for (x = 0; x < (unsigned)src.w; x++)
+            {
+               uint8_t r, g, b;
+               int     want = a->buffer[(size_t)(ty + y) * a->width + tx + x];
+               SDL_GetRGB(((uint32_t*)surf->pixels)
+                     [(size_t)y * (surf->pitch / 4) + x], surf->format,
+                     &r, &g, &b);
+               if (     r - want > 1 || want - r > 1
+                     || g - want > 1 || want - g > 1
+                     || b - want > 1 || want - b > 1)
+                  bad++;
+            }
+      }
+   return bad == 0;
 }
 
 int main(void)
@@ -142,8 +183,65 @@ int main(void)
    found = glyph_lands('W', pen_x, pen_y + line_h, &missing);
    CHECK(found > 0 && missing == 0, "the second line is a line height down");
 
+   /* The OSD texture after new glyphs: only their region is sent */
+   {
+      static const uint32_t first[2] = { 0x0391, 0x0410 };
+      struct font_atlas *a = vid_st.font_driver->get_atlas(vid_st.font_data);
+      uint32_t cp;
+      int i;
+      CHECK(tex_matches(vid_st.font.tex, a), "osd: the texture as made");
+      for (i = 0; i < 2; i++)
+      {
+         font_driver_frame_begin();
+         for (cp = first[i]; cp < first[i] + 24; cp++)
+            vid_st.font_driver->get_glyph(vid_st.font_data, cp);
+         CHECK(a->dirty && a->dirty_xy1
+               != VIDEO_SCALE_PACK(a->width, a->height),
+               "osd: new glyphs dirty part of the atlas");
+         CHECK(i == 0 || a->dirty_xy0 != 0,
+               "osd: a region off the atlas's corner");
+         sdl2_font_upload(&vid_st, a);
+         CHECK(!a->dirty, "osd: the upload takes the region");
+         CHECK(tex_matches(vid_st.font.tex, a),
+               "osd: the texture after a region");
+      }
+   }
+
+   /* The raster font's texture is made whole, after which only the
+    * region new glyphs were drawn into is converted and sent */
+   {
+      sdl2_raster_t *rf = (sdl2_raster_t*)sdl2_raster_font_init(&vid_st,
+            dejavu, 16, false);
+      CHECK(rf && rf->tex, "the raster font and its texture");
+      if (rf && rf->tex)
+      {
+         static const uint32_t first[2] = { 0x0391, 0x0410 };
+         struct font_atlas *a = rf->atlas;
+         uint32_t cp;
+         int i;
+         CHECK(tex_matches(rf->tex, rf->atlas), "raster: the texture made whole");
+         /* The second batch takes cells clear of the atlas's corner */
+         for (i = 0; i < 2; i++)
+         {
+            font_driver_frame_begin();
+            for (cp = first[i]; cp < first[i] + 24; cp++)
+               rf->font_driver->get_glyph(rf->font_data, cp);
+            CHECK(a->dirty && a->dirty_xy1
+                  != VIDEO_SCALE_PACK(a->width, a->height),
+                  "raster: new glyphs dirty part of the atlas");
+            CHECK(i == 0 || a->dirty_xy0 != 0,
+                  "raster: a region off the atlas's corner");
+            sdl2_raster_font_upload_atlas(rf);
+            CHECK(!a->dirty, "raster: the upload takes the region");
+            CHECK(tex_matches(rf->tex, rf->atlas), "raster: the texture after a region");
+         }
+         sdl2_raster_font_free(rf, false);
+      }
+   }
+
    SDL_DestroyTexture(vid_st.font.tex);
    vid_st.font_driver->free(vid_st.font_data);
+   free(vid_st.font_staging);
    SDL_DestroyRenderer(vid_st.renderer);
    SDL_FreeSurface(surf);
 

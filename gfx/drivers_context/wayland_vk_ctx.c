@@ -158,8 +158,28 @@ static bool gfx_ctx_wl_set_video_mode(void *data,
    unsigned height = VIDEO_SCALE_H(dims);
    gfx_ctx_wayland_data_t *wl   = (gfx_ctx_wayland_data_t*)data;
 
+   if (wl->vk.vk_surface != VK_NULL_HANDLE)
+   {
+      /* Keep current geometry until the compositor configures the new state. */
+      if (!fullscreen && width && height)
+         wl->floating_dims = VIDEO_SCALE_PACK(width, height);
+      wl->ignore_configuration = false;
+      return gfx_ctx_wl_request_fullscreen(wl, fullscreen);
+   }
+
    if (!gfx_ctx_wl_set_video_mode_common_size(wl, width, height, fullscreen))
       goto error;
+
+   {
+      struct wl_region *opaque = wl_compositor_create_region(wl->compositor);
+      if (opaque)
+      {
+         /* Surface coordinates: keep the hint valid across resizes. */
+         wl_region_add(opaque, 0, 0, 0x7FFFFFFF, 0x7FFFFFFF);
+         wl_surface_set_opaque_region(wl->surface, opaque);
+         wl_region_destroy(opaque);
+      }
+   }
 
    /* Set buffer scale before creating the Vulkan WSI surface.
     * Fixes incorrect size/offset on HiDPI/fullscreen. */
@@ -198,15 +218,13 @@ error:
 }
 
 static void gfx_ctx_wl_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
    /* On Wayland the seat's state lives with the surface, here. The
     * frontend starts the input driver; it is handed that state. */
    wl->input.gfx = wl;
-   input_driver_left_to_frontend_with(INPUT_WINDOW_WAYLAND, &wl->input,
-         input, input_data);
+   input_driver_video_window(INPUT_WINDOW_WAYLAND, &wl->input);
 }
 
 static enum gfx_ctx_api gfx_ctx_wl_get_api(void *data)
@@ -295,6 +313,8 @@ static uint32_t gfx_ctx_wl_get_flags(void *data)
 {
    uint32_t             flags = 0;
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+
+   BIT32_SET(flags, GFX_CTX_FLAGS_FULLSCREEN_IN_PLACE);
 
 #if defined(HAVE_SLANG) && defined(HAVE_SPIRV_CROSS)
    BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_SLANG);

@@ -2107,8 +2107,8 @@ static bool netplay_handshake_pre_sync(netplay_t *netplay,
 
       for (j = 0; j < MAX_CLIENTS; j++)
       {
-         if (device & (1<<j))
-            netplay->client_devices[j] |= 1<<i;
+         if (device & (1U << j))
+            netplay->client_devices[j] |= 1U << i;
       }
    }
 
@@ -3047,9 +3047,9 @@ static void netplay_update_unread_ptr(netplay_t *netplay)
 
       for (client = 0; client < MAX_CLIENTS; client++)
       {
-         if (!(netplay->connected_players & (1 << client)))
+         if (!(netplay->connected_players & (1U << client)))
             continue;
-         if ((netplay->connected_slaves   & (1 << client)))
+         if ((netplay->connected_slaves   & (1U << client)))
             continue;
 
          if (netplay->read_frame_count[client] < new_unread_frame_count)
@@ -3079,6 +3079,22 @@ static void netplay_update_unread_ptr(netplay_t *netplay)
    }
 }
 
+/* ===== BEGIN netplay real clients ===== */
+/* Bitmap of the clients with real input of @size words in @list.
+ * A slave's own input is filed under MAX_CLIENTS and has no bit. */
+static uint32_t netplay_real_clients(netplay_input_state_t list,
+      uint32_t size)
+{
+   uint32_t clients = 0;
+   for (; list; list = list->next)
+      if (     list->used
+            && list->size       == size
+            && list->client_num <  MAX_CLIENTS)
+         clients |= UINT32_C(1) << list->client_num;
+   return clients;
+}
+/* ===== END netplay real clients ===== */
+
 /**
  * netplay_device_client_state
  * @netplay             : pointer to netplay object
@@ -3090,7 +3106,7 @@ netplay_input_state_t netplay_device_client_state(netplay_t *netplay,
       struct delta_frame *simframe, uint32_t device, uint32_t client)
 {
    uint32_t                 dsize =
-      netplay_expected_input_size(netplay, 1 << device);
+      netplay_expected_input_size(netplay, 1U << device);
    netplay_input_state_t simstate =
       netplay_input_state_for(
             &simframe->real_input[device], client,
@@ -3122,13 +3138,8 @@ static void netplay_merge_digital(netplay_t *netplay,
       & NETPLAY_SHARE_DIGITAL_BITS;
 
    /* Make sure all real clients are accounted for */
-   for (simstate = simframe->real_input[device];
-         simstate; simstate = simstate->next)
-   {
-      if (!simstate->used || simstate->size != resstate->size)
-         continue;
-      clients |= 1 << simstate->client_num;
-   }
+   clients |= netplay_real_clients(simframe->real_input[device],
+         resstate->size);
 
    if (share_mode == NETPLAY_SHARE_DIGITAL_VOTE)
    {
@@ -3145,7 +3156,7 @@ static void netplay_merge_digital(netplay_t *netplay,
 
       for (client = 0; client < MAX_CLIENTS; client++)
       {
-         if (!(clients & (1 << client)))
+         if (!(clients & (1U << client)))
             continue;
 
          simstate = netplay_device_client_state(
@@ -3161,9 +3172,9 @@ static void netplay_merge_digital(netplay_t *netplay,
                continue;
             for (bit = 0; bit < 32; bit++)
             {
-               if (!(digital[word] & (1 << bit)))
+               if (!(digital[word] & (1U << bit)))
                   continue;
-               if (simstate->data[word] & (1 << bit))
+               if (simstate->data[word] & (1U << bit))
                   votes[word].votes[bit]++;
             }
          }
@@ -3176,7 +3187,7 @@ static void netplay_merge_digital(netplay_t *netplay,
          for (bit = 0; bit < 32; bit++)
          {
             if (votes[word].votes[bit] > client_count)
-               resstate->data[word] |= (1 << bit);
+               resstate->data[word] |= (1U << bit);
          }
       }
    }
@@ -3184,7 +3195,7 @@ static void netplay_merge_digital(netplay_t *netplay,
    {
       for (client = 0; client < MAX_CLIENTS; client++)
       {
-         if (!(clients & (1 << client)))
+         if (!(clients & (1U << client)))
             continue;
          simstate = netplay_device_client_state(
                netplay, simframe, device, client);
@@ -3215,15 +3226,15 @@ static void netplay_merge_digital(netplay_t *netplay,
             {
                for (bit = 0; bit < 32; bit++)
                {
-                  if (!(digital[word] & (1 << bit)))
+                  if (!(digital[word] & (1U << bit)))
                      continue;
                   switch (share_mode)
                   {
                      case NETPLAY_SHARE_DIGITAL_XOR:
-                        resstate->data[word] ^= part & (1 << bit);
+                        resstate->data[word] ^= part & (1U << bit);
                         break;
                      default:
-                        resstate->data[word] |= part & (1 << bit);
+                        resstate->data[word] |= part & (1U << bit);
                   }
                }
             }
@@ -3254,16 +3265,12 @@ static void merge_analog_part(netplay_t *netplay,
    int32_t value                 = 0, new_value;
 
    /* Make sure all real clients are accounted for */
-   for (simstate = simframe->real_input[device]; simstate; simstate = simstate->next)
-   {
-      if (!simstate->used || simstate->size != resstate->size)
-         continue;
-      clients |= 1 << simstate->client_num;
-   }
+   clients |= netplay_real_clients(simframe->real_input[device],
+         resstate->size);
 
    for (client = 0; client < MAX_CLIENTS; client++)
    {
-      if (!(clients & (1 << client)))
+      if (!(clients & (1U << client)))
          continue;
       simstate = netplay_device_client_state(
             netplay, simframe, device, client);
@@ -3347,21 +3354,17 @@ static bool netplay_resolve_input(netplay_t *netplay,
    for (device = 0; device < MAX_INPUT_DEVICES; device++)
    {
       unsigned dtype = netplay->config_devices[device]&RETRO_DEVICE_MASK;
-      uint32_t dsize = netplay_expected_input_size(netplay, 1 << device);
+      uint32_t dsize = netplay_expected_input_size(netplay, 1U << device);
       clients        = netplay->device_clients[device];
       client_count   = 0;
 
       /* Make sure all real clients are accounted for */
-      for (simstate = simframe->real_input[device]; simstate; simstate = simstate->next)
-      {
-         if (!simstate->used || simstate->size != dsize)
-            continue;
-         clients |= 1 << simstate->client_num;
-      }
+      clients       |= netplay_real_clients(
+            simframe->real_input[device], dsize);
 
       for (client = 0; client < MAX_CLIENTS; client++)
       {
-         if (!(clients & (1 << client)))
+         if (!(clients & (1U << client)))
             continue;
 
          /* Resolve this client-device */
@@ -4130,7 +4133,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
       if ((netplay->flags & NETPLAY_FLAG_CATCH_UP))
       {
          netplay->flags &= ~NETPLAY_FLAG_CATCH_UP;
-         input_state_get_ptr()->flags &= ~INP_FLAG_NONBLOCKING;
+         input_driver_set_nonblocking(false);
          driver_set_nonblock_state();
       }
       return;
@@ -4307,7 +4310,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
       /* Look for players that are ahead of us */
       for (client = 0; client < MAX_CLIENTS; client++)
       {
-         if (!(netplay->connected_players & (1 << client)))
+         if (!(netplay->connected_players & (1U << client)))
             continue;
          if (netplay->read_frame_count[client] > hi_frame_count)
             hi_frame_count = netplay->read_frame_count[client];
@@ -4323,7 +4326,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
       if (netplay->self_frame_count + 1 >= lo_frame_count)
       {
          netplay->flags &= ~NETPLAY_FLAG_CATCH_UP;
-         input_state_get_ptr()->flags &= ~INP_FLAG_NONBLOCKING;
+         input_driver_set_nonblocking(false);
          driver_set_nonblock_state();
       }
 
@@ -4352,7 +4355,7 @@ static void netplay_sync_input_post_frame(netplay_t *netplay, bool stalled)
                /* We're definitely falling behind! */
                netplay->flags |= NETPLAY_FLAG_CATCH_UP;
                netplay->catch_up_time        = 0;
-               input_state_get_ptr()->flags |= INP_FLAG_NONBLOCKING;
+               input_driver_set_nonblocking(true);
                driver_set_nonblock_state();
             }
             else
@@ -4421,7 +4424,7 @@ static void print_state(netplay_t *netplay)
       APPEND((M, " H:%u", netplay->server_frame_count));
    for (client = 0; client < MAX_USERS; client++)
    {
-      if ((netplay->connected_players & (1<<client)))
+      if ((netplay->connected_players & (1U << client)))
          APPEND((M, " %u:%u", client, netplay->read_frame_count[client]));
    }
    msg[sizeof(msg)-1] = '\0';
@@ -4725,7 +4728,7 @@ bool netplay_send_cur_input(netplay_t *netplay,
          if (from_client == to_client)
             continue;
 
-         if ((netplay->connected_players & (1<<from_client)))
+         if ((netplay->connected_players & (1U << from_client)))
          {
             if (dframe->have_real[from_client])
             {
@@ -5026,7 +5029,7 @@ static void netplay_handle_play_spectate(netplay_t *netplay,
             if (cmd_size || in_payload)
                return;
 
-            client_mask = ~(1 << client_num);
+            client_mask = ~(1U << client_num);
 
             netplay->connected_players &= client_mask;
             netplay->connected_slaves  &= client_mask;
@@ -5084,7 +5087,7 @@ static void netplay_handle_play_spectate(netplay_t *netplay,
             if (cmd_size != sizeof(mode) || !in_payload)
                return;
 
-            client_mask = 1 << client_num;
+            client_mask = 1U << client_num;
 
             mode       = ntohl(*in_payload);
             devices    = mode & 0xFFFF;
@@ -5108,7 +5111,7 @@ static void netplay_handle_play_spectate(netplay_t *netplay,
                /* Make sure the devices are available and/or shareable */
                for (i = 0; i < MAX_INPUT_DEVICES; i++)
                {
-                  if (!(devices & (1 << i)))
+                  if (!(devices & (1U << i)))
                      continue;
                   if (!netplay->device_clients[i])
                      continue;
@@ -5136,7 +5139,7 @@ static void netplay_handle_play_spectate(netplay_t *netplay,
                }
                for (i = 0; i < MAX_INPUT_DEVICES; i++)
                {
-                  if (!(devices & (1 << i)))
+                  if (!(devices & (1U << i)))
                      continue;
 
                   if (!netplay->device_clients[i])
@@ -5202,7 +5205,7 @@ static void netplay_handle_play_spectate(netplay_t *netplay,
                {
                   retro_ctx_controller_info_t pad;
 
-                  devices    = 1 << i;
+                  devices    = 1U << i;
 
                   pad.port   = (unsigned)i;
                   pad.device = netplay->config_devices[i];
@@ -5351,7 +5354,7 @@ bool netplay_cmd_mode(netplay_t *netplay,
             for (i = 0; i < MAX_INPUT_DEVICES; i++)
             {
                if (settings->bools.netplay_request_devices[i])
-                  buf |= 1 << i;
+                  buf |= 1U << i;
             }
 
             buf      = htonl(buf);
@@ -5703,7 +5706,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                return netplay_cmd_nak(netplay, connection);
             }
 
-            if (!(netplay->connected_players & (1<<client_num)))
+            if (!(netplay->connected_players & (1U << client_num)))
             {
                RARCH_ERR("[Netplay] Invalid NETPLAY_CMD_INPUT player number.\n");
                return netplay_cmd_nak(netplay, connection);
@@ -5757,7 +5760,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                if (!(devices & (1<<device)))
                   continue;
 
-               dsize  = netplay_expected_input_size(netplay, 1 << device);
+               dsize  = netplay_expected_input_size(netplay, 1U << device);
                istate = netplay_input_state_for(&dframe->real_input[device],
                      client_num, dsize,
                      false /* Must be false because of slave-mode clients */,
@@ -6033,11 +6036,11 @@ static bool netplay_get_cmd(netplay_t *netplay,
                else
                   netplay->self_mode = NETPLAY_CONNECTION_PLAYING;
 
-               netplay->connected_players |= (1<<client_num);
+               netplay->connected_players |= (1U << client_num);
                netplay->client_devices[client_num] = devices;
                for (device = 0; device < MAX_INPUT_DEVICES; device++)
                   if (devices & (1<<device))
-                     netplay->device_clients[device] |= (1<<client_num);
+                     netplay->device_clients[device] |= (1U << client_num);
                netplay->self_devices = devices;
 
                netplay->read_ptr[client_num] = netplay->server_ptr;
@@ -6059,7 +6062,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                            netplay_input_state_t istate;
                            if (!(devices & (1<<device)))
                               continue;
-                           dsize  = netplay_expected_input_size(netplay, 1 << device);
+                           dsize  = netplay_expected_input_size(netplay, 1U << device);
                            istate = netplay_input_state_for(
                                  &dframe->real_input[device], client_num, dsize,
                                  false, false);
@@ -6143,11 +6146,11 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   return netplay_cmd_nak(netplay, connection);
                }
 
-               netplay->connected_players         |= (1 << client_num);
+               netplay->connected_players         |= (1U << client_num);
                netplay->client_devices[client_num] = devices;
                for (device = 0; device < MAX_INPUT_DEVICES; device++)
                   if (devices & (1<<device))
-                     netplay->device_clients[device] |= (1<<client_num);
+                     netplay->device_clients[device] |= (1U << client_num);
 
                netplay->read_ptr[client_num] = netplay->server_ptr;
                netplay->read_frame_count[client_num] = netplay->server_frame_count;
@@ -6162,10 +6165,10 @@ static bool netplay_get_cmd(netplay_t *netplay,
             }
             else
             {
-               netplay->connected_players          &= ~(1 << client_num);
+               netplay->connected_players          &= ~(1U << client_num);
                netplay->client_devices[client_num]  = 0;
                for (device = 0; device < MAX_INPUT_DEVICES; device++)
-                  netplay->device_clients[device]  &= ~(1 << client_num);
+                  netplay->device_clients[device]  &= ~(1U << client_num);
 
                /* Announce it */
                netplay_announce_play_spectate(netplay, nick, NETPLAY_CONNECTION_SPECTATING, 0, -1, client_num);
@@ -6500,7 +6503,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
             /* Don't expect earlier data from other clients. */
             for (i = 0; i < MAX_CLIENTS; i++)
             {
-               if (!(netplay->connected_players & (1 << i)))
+               if (!(netplay->connected_players & (1U << i)))
                   continue;
 
                if (frame > netplay->read_frame_count[i])
@@ -6600,7 +6603,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
             /* Don't expect earlier data from other clients. */
             for (i = 0; i < MAX_CLIENTS; i++)
             {
-               if (!(netplay->connected_players & (1 << i)))
+               if (!(netplay->connected_players & (1U << i)))
                   continue;
 
                if (frame > netplay->read_frame_count[i])
@@ -7019,7 +7022,7 @@ static void netplay_handle_slaves(netplay_t *netplay)
                if (!istate_in)
                   netplay_input_state_for(&frame->real_input[device],
                         client_num,
-                        netplay_expected_input_size(netplay, 1 << device), true,
+                        netplay_expected_input_size(netplay, 1U << device), true,
                         false);
                else
                {
@@ -7982,7 +7985,7 @@ static void netplay_force_future(netplay_t *netplay)
       uint32_t client;
       for (client = 0; client < MAX_CLIENTS; client++)
       {
-         if (!(netplay->connected_players & (1 << client)))
+         if (!(netplay->connected_players & (1U << client)))
             continue;
 
          if (netplay->read_frame_count[client] < netplay->run_frame_count)
@@ -8085,7 +8088,12 @@ static bool netplay_process_savestate1(retro_ctx_serialize_info_t* serial_info)
 #ifdef HAVE_CHEEVOS
       else if (memcmp(marker, NETPLAYSTATE_CHEEVOS_BLOCK, 4) == 0 && settings->bools.cheevos_enable)
       {
-         const bool hardcore_state = (input[0] != 0);
+         bool hardcore_state;
+
+         if (block_size < 8)
+            return false;
+
+         hardcore_state = (input[0] != 0);
          if (hardcore_state != rcheevos_hardcore_active() && !netplay_is_spectating())
          {
             const char *msg = msg_hash_to_str(MSG_CHEEVOS_HARDCORE_MODE_CHANGED_BY_HOST);
@@ -8111,7 +8119,7 @@ static bool netplay_process_savestate1(retro_ctx_serialize_info_t* serial_info)
           * block, and stepping 'input' here as well used to land the
           * walk 8 bytes past the next header. */
          if (block_size > 8)
-            rcheevos_set_serialized_data((void*)(input + 8));
+            rcheevos_set_serialized_data(input + 8, block_size - 8);
       }
 #endif
 
@@ -8260,7 +8268,7 @@ static void netplay_toggle_play_spectate(netplay_t *netplay)
             {
                int i;
                uint32_t client_num = netplay->self_client_num;
-               uint32_t client_mask = ~(1 << client_num);
+               uint32_t client_mask = ~(1U << client_num);
 
                netplay->connected_players &= client_mask;
 
@@ -8286,6 +8294,47 @@ static void netplay_toggle_play_spectate(netplay_t *netplay)
          break;
    }
 }
+
+/* ===== BEGIN netplay input decode ===== */
+/* What a core's query of a joypad, analog, mouse or lightgun reads
+ * from a resolved input state of @size words. Analog buttons read
+ * their digital bit at full pressure; anything the state does not
+ * carry reads 0. */
+static int16_t netplay_input_decode(const uint32_t *data, uint32_t size,
+      unsigned device, unsigned idx, unsigned id)
+{
+   switch (device)
+   {
+      case RETRO_DEVICE_JOYPAD:
+         if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
+            return (int16_t)data[0];
+         if (id < 32)
+            return ((UINT32_C(1) << id) & data[0]) ? 1 : 0;
+         break;
+      case RETRO_DEVICE_ANALOG:
+         if (size != 3)
+            break;
+         if (     idx <= RETRO_DEVICE_INDEX_ANALOG_RIGHT
+               && id  <= RETRO_DEVICE_ID_ANALOG_Y)
+            return (int16_t)(uint16_t)(data[1 + idx] >> (id * 16));
+         if (idx == RETRO_DEVICE_INDEX_ANALOG_BUTTON && id < 16)
+            return ((UINT32_C(1) << id) & data[0]) ? 0x7fff : 0;
+         break;
+      case RETRO_DEVICE_MOUSE:
+      case RETRO_DEVICE_LIGHTGUN:
+         if (size != 2)
+            break;
+         if (id <= RETRO_DEVICE_ID_MOUSE_Y)
+            return (int16_t)(uint16_t)(data[1] >> (id * 16));
+         if (id < 32)
+            return ((UINT32_C(1) << id) & data[0]) ? 1 : 0;
+         break;
+      default:
+         break;
+   }
+   return 0;
+}
+/* ===== END netplay input decode ===== */
 
 static int16_t netplay_input_state(netplay_t *netplay,
       unsigned port, unsigned device,
@@ -8324,46 +8373,21 @@ static int16_t netplay_input_state(netplay_t *netplay,
 
    curr_input_state = istate->data;
 
-   switch (device)
+   if (device == RETRO_DEVICE_KEYBOARD)
    {
-      case RETRO_DEVICE_JOYPAD:
-         if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
-            return curr_input_state[0];
-         return ((1 << id) & curr_input_state[0]) ? 1 : 0;
-
-      case RETRO_DEVICE_ANALOG:
-         if (istate->size == 3)
-         {
-            uint32_t state = curr_input_state[1 + idx];
-            return (int16_t)(uint16_t)(state >> (id * 16));
-         }
-         break;
-      case RETRO_DEVICE_MOUSE:
-      case RETRO_DEVICE_LIGHTGUN:
-         if (istate->size == 2)
-         {
-            if (id <= RETRO_DEVICE_ID_MOUSE_Y)
-               return (int16_t)(uint16_t)(curr_input_state[1] >> (id * 16));
-            return ((1 << id) & curr_input_state[0]) ? 1 : 0;
-         }
-         break;
-      case RETRO_DEVICE_KEYBOARD:
-         {
-            unsigned key = netplay_key_hton(netplay, id);
-            if (key != NETPLAY_KEY_UNKNOWN)
-            {
-               unsigned word = key / 32;
-               unsigned bit  = key % 32;
-               if (word <= istate->size)
-                  return ((UINT32_C(1) << bit) & curr_input_state[word]) ? 1 : 0;
-            }
-         }
-         break;
-      default:
-         break;
+      unsigned key = netplay_key_hton(netplay, id);
+      if (key != NETPLAY_KEY_UNKNOWN)
+      {
+         unsigned word = key / 32;
+         unsigned bit  = key % 32;
+         if (word < istate->size)
+            return ((UINT32_C(1) << bit) & curr_input_state[word]) ? 1 : 0;
+      }
+      return 0;
    }
 
-   return 0;
+   return netplay_input_decode(curr_input_state, istate->size,
+         device, idx, id);
 }
 
 /**
@@ -8397,7 +8421,7 @@ static bool get_self_input_state(
 
    for (devi = 0; devi < MAX_INPUT_DEVICES; devi++)
    {
-      if (!(devices & (1 << devi)))
+      if (!(devices & (1U << devi)))
          continue;
 
       /* Find an appropriate local device */
@@ -8405,7 +8429,7 @@ static bool get_self_input_state(
 
       for (local_device = 0; local_device < MAX_INPUT_DEVICES; local_device++)
       {
-         if (used_devices & (1 << local_device))
+         if (used_devices & (1U << local_device))
             continue;
          if ((netplay->config_devices[local_device]&RETRO_DEVICE_MASK) == dev_type)
             break;
@@ -8413,12 +8437,12 @@ static bool get_self_input_state(
 
       if (local_device == MAX_INPUT_DEVICES)
          local_device = 0;
-      used_devices |= (1 << local_device);
+      used_devices |= (1U << local_device);
 
       istate = netplay_input_state_for(&ptr->real_input[devi],
             /* If we're a slave, we write our own input to MAX_CLIENTS to keep it separate */
             (netplay->self_mode==NETPLAY_CONNECTION_SLAVE)?MAX_CLIENTS:netplay->self_client_num,
-            netplay_expected_input_size(netplay, 1 << devi),
+            netplay_expected_input_size(netplay, 1U << devi),
             true, false);
       if (!istate)
          continue; /* FIXME: More severe? */
@@ -8450,7 +8474,7 @@ static bool get_self_input_state(
                {
                   int16_t tmp = cb(local_device,
                         RETRO_DEVICE_JOYPAD, 0, (unsigned)i);
-                  state[0] |= tmp ? 1 << i : 0;
+                  state[0] |= tmp ? 1U << i : 0;
                }
                break;
 
@@ -8468,7 +8492,7 @@ static bool get_self_input_state(
                {
                   int16_t tmp = cb(local_device, dtype, 0,
                         (unsigned) i);
-                  state[0] |= tmp ? 1 << i : 0;
+                  state[0] |= tmp ? 1U << i : 0;
                }
                break;
             }
@@ -8856,11 +8880,7 @@ bool init_netplay_deferred(const char *server, unsigned port, const char *mitm_s
 void input_poll_net(netplay_t *netplay)
 {
    if (!netplay_should_skip(netplay))
-   {
-      input_driver_state_t *input_st = input_state_get_ptr();
-
-      netplay_poll(netplay, input_st->flags & INP_FLAG_BLOCK_LIBRETRO_INPUT);
-   }
+      netplay_poll(netplay, input_driver_libretro_input_blocked());
 }
 
 /* Netplay polling callbacks */

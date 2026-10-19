@@ -52,7 +52,9 @@
 typedef struct
 {
    VGImage image;
-   unsigned short x, y, w, h;
+   /* The atlas rectangle it covers, as the glyph has it */
+   unsigned atlas_pos;
+   unsigned dims;
 } vg_glyph_image_t;
 
 typedef struct
@@ -71,8 +73,7 @@ typedef struct
     * the glyphs are multiplied by */
    VGImage font_atlas;
    VGPaint font_paint;
-   unsigned font_atlas_w;
-   unsigned font_atlas_h;
+   unsigned font_atlas_dims;
    vg_glyph_image_t font_glyphs[VG_FONT_CHILDREN];
 
    unsigned mTextureWidth;
@@ -125,8 +126,9 @@ static bool vg_font_init(vg_t *vg, const char *path, float size)
       return false;
    if ((atlas = vg->font_driver->get_atlas(vg->font_data)))
    {
-      atlas->max_width  = (unsigned)vgGeti(VG_MAX_IMAGE_WIDTH);
-      atlas->max_height = (unsigned)vgGeti(VG_MAX_IMAGE_HEIGHT);
+      unsigned max_w  = (unsigned)vgGeti(VG_MAX_IMAGE_WIDTH);
+      unsigned max_h  = (unsigned)vgGeti(VG_MAX_IMAGE_HEIGHT);
+      atlas->max_dims = VIDEO_SCALE_PACK(max_w, max_h);
    }
    if ((vg->font_paint = vgCreatePaint()) == VG_INVALID_HANDLE)
    {
@@ -138,8 +140,7 @@ static bool vg_font_init(vg_t *vg, const char *path, float size)
    return true;
 }
 
-static void *vg_init(const video_info_t *video,
-      input_driver_t **input, void **input_data)
+static void *vg_init(const video_info_t *video)
 {
    unsigned win_dims;
    VGfloat clearColor[4]           = {0, 0, 0, 1};
@@ -244,8 +245,7 @@ static void *vg_init(const video_info_t *video,
    {
       const char *joypad_name = settings->arrays.input_joypad_driver;
       vg->ctx_driver->input_driver(
-            vg->ctx_data, joypad_name,
-            input, input_data);
+            vg->ctx_data, joypad_name);
    }
 
    if (video->font_enable)
@@ -287,8 +287,7 @@ static void vg_font_release_images(vg_t *vg)
    if (vg->font_atlas != VG_INVALID_HANDLE)
       vgDestroyImage(vg->font_atlas);
    vg->font_atlas   = VG_INVALID_HANDLE;
-   vg->font_atlas_w = 0;
-   vg->font_atlas_h = 0;
+   vg->font_atlas_dims = 0;
 }
 
 /* Brings the atlas image up to the glyph cache: made again when the
@@ -297,8 +296,8 @@ static void vg_font_release_images(vg_t *vg)
 static bool vg_font_sync_atlas(vg_t *vg, struct font_atlas *atlas)
 {
    if (     vg->font_atlas == VG_INVALID_HANDLE
-         || atlas->width   != vg->font_atlas_w
-         || atlas->height  != vg->font_atlas_h)
+         || vg->font_atlas_dims != VIDEO_SCALE_PACK(atlas->width,
+            atlas->height))
    {
       vg_font_release_images(vg);
       if ((vg->font_atlas = vgCreateImage(VG_A_8,
@@ -307,19 +306,20 @@ static bool vg_font_sync_atlas(vg_t *vg, struct font_atlas *atlas)
                   | VG_IMAGE_QUALITY_FASTER
                   | VG_IMAGE_QUALITY_BETTER)) == VG_INVALID_HANDLE)
          return false;
-      vg->font_atlas_w = atlas->width;
-      vg->font_atlas_h = atlas->height;
+      vg->font_atlas_dims = VIDEO_SCALE_PACK(atlas->width, atlas->height);
       vgImageSubData(vg->font_atlas, atlas->buffer, (VGint)atlas->width,
             VG_A_8, 0, 0, (VGint)atlas->width, (VGint)atlas->height);
    }
    else if (atlas->dirty)
    {
-      unsigned x0 = atlas->dirty_x0;
-      unsigned y0 = atlas->dirty_y0;
-      unsigned x1 = (atlas->dirty_x1 < atlas->width)
-         ? atlas->dirty_x1 : atlas->width;
-      unsigned y1 = (atlas->dirty_y1 < atlas->height)
-         ? atlas->dirty_y1 : atlas->height;
+      unsigned x0 = VIDEO_SCALE_W(atlas->dirty_xy0);
+      unsigned y0 = VIDEO_SCALE_H(atlas->dirty_xy0);
+      unsigned x1 = VIDEO_SCALE_W(atlas->dirty_xy1);
+      unsigned y1 = VIDEO_SCALE_H(atlas->dirty_xy1);
+      if (x1 > atlas->width)
+         x1 = atlas->width;
+      if (y1 > atlas->height)
+         y1 = atlas->height;
       if (x1 > x0 && y1 > y0)
          vgImageSubData(vg->font_atlas,
                atlas->buffer + (size_t)y0 * atlas->width + x0,
@@ -338,27 +338,27 @@ static VGImage vg_font_glyph_image(vg_t *vg, const struct font_glyph *glyph)
    vg_glyph_image_t *e;
    uint32_t hash;
 
-   if (!glyph->width || !glyph->height)
+   if (!VIDEO_SCALE_W(glyph->dims) || !VIDEO_SCALE_H(glyph->dims))
       return VG_INVALID_HANDLE;
 
-   hash = ((uint32_t)glyph->atlas_offset_x * 0x9E3779B1u)
-        ^ ((uint32_t)glyph->atlas_offset_y * 0x85EBCA77u);
+   hash = ((uint32_t)VIDEO_SCALE_W(glyph->atlas_pos) * 0x9E3779B1u)
+        ^ ((uint32_t)VIDEO_SCALE_H(glyph->atlas_pos) * 0x85EBCA77u);
    e    = &vg->font_glyphs[(hash >> 16) & (VG_FONT_CHILDREN - 1)];
 
    if (     e->image != VG_INVALID_HANDLE
-         && e->x == glyph->atlas_offset_x && e->y == glyph->atlas_offset_y
-         && e->w == glyph->width          && e->h == glyph->height)
+         && e->atlas_pos == glyph->atlas_pos
+         && e->dims      == glyph->dims)
       return e->image;
 
    if (e->image != VG_INVALID_HANDLE)
       vgDestroyImage(e->image);
-   e->x     = (unsigned short)glyph->atlas_offset_x;
-   e->y     = (unsigned short)glyph->atlas_offset_y;
-   e->w     = (unsigned short)glyph->width;
-   e->h     = (unsigned short)glyph->height;
-   e->image = vgChildImage(vg->font_atlas,
-         (VGint)glyph->atlas_offset_x, (VGint)glyph->atlas_offset_y,
-         (VGint)glyph->width, (VGint)glyph->height);
+   e->atlas_pos = glyph->atlas_pos;
+   e->dims      = glyph->dims;
+   e->image     = vgChildImage(vg->font_atlas,
+         (VGint)VIDEO_SCALE_W(glyph->atlas_pos),
+         (VGint)VIDEO_SCALE_H(glyph->atlas_pos),
+         (VGint)VIDEO_SCALE_W(glyph->dims),
+         (VGint)VIDEO_SCALE_H(glyph->dims));
    return e->image;
 }
 
@@ -440,8 +440,8 @@ static void vg_render_msg(vg_t *vg, const char *msg, size_t msg_len,
          line_x -= (float)(line_width) * scale / 2.0f; \
       line_y = y0 + off_y - (float)(line) * line_height * scale; \
       if (     atlas->dirty \
-            || atlas->width  != vg->font_atlas_w \
-            || atlas->height != vg->font_atlas_h) \
+            || vg->font_atlas_dims != VIDEO_SCALE_PACK(atlas->width, \
+               atlas->height)) \
          atlas_ok = vg_font_sync_atlas(vg, atlas);
 #define FONT_LAYOUT_GLYPH(glyph, pen_x, pen_y) \
       if (atlas_ok) \

@@ -301,6 +301,7 @@ static void *gfx_ctx_wl_init(void *data)
 #endif
          &wl))
       goto error;
+   wl->max_swapchain_images = config_get_ptr()->uints.video_max_swapchain_images;
 #ifdef HAVE_EGL
    if (!gfx_ctx_wl_egl_init_context(wl))
       goto error;
@@ -530,6 +531,7 @@ static bool gfx_ctx_wl_set_video_mode(void *data,
    if (!gfx_ctx_wl_set_video_mode_common_fullscreen(wl, fullscreen))
       goto error;
 
+   video_driver_set_hdr_output_mode((wl->color.flags & WL_COLOR_FP16) ? 2 : 0);
    return true;
 
 error:
@@ -538,15 +540,13 @@ error:
 }
 
 static void gfx_ctx_wl_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
    /* On Wayland the seat's state lives with the surface, here. The
     * frontend starts the input driver; it is handed that state. */
    wl->input.gfx = wl;
-   input_driver_left_to_frontend_with(INPUT_WINDOW_WAYLAND, &wl->input,
-         input, input_data);
+   input_driver_video_window(INPUT_WINDOW_WAYLAND, &wl->input);
 }
 
 static enum gfx_ctx_api gfx_ctx_wl_get_api(void *data)
@@ -609,8 +609,7 @@ static void gfx_ctx_wl_swap_buffers(void *data)
 {
 #ifdef HAVE_EGL
    gfx_ctx_wayland_data_t *wl     = (gfx_ctx_wayland_data_t*)data;
-   settings_t *settings           = config_get_ptr();
-   unsigned max_swapchain_images  = settings->uints.video_max_swapchain_images;
+   unsigned max_swapchain_images  = wl->max_swapchain_images;
    /* Only throttle to the compositor frame callback when actually
     * vsync-pacing. A swap interval of 0 (fast-forward, or vsync
     * disabled) means we explicitly do not want to wait for the
@@ -664,6 +663,18 @@ static void gfx_ctx_wl_bind_hw_render(void *data, bool enable)
    egl_bind_hw_render(&wl->egl, enable);
 #endif
 }
+
+#ifdef HAVE_EGL
+static bool gfx_ctx_wl_shared_context_new(void *data,
+      gfx_ctx_shared_context_t *out)
+{
+   gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+   memset(out, 0, sizeof(*out));
+   if (!wl || wl_api != GFX_CTX_OPENGL_API)
+      return false;
+   return egl_shared_context_new(&wl->egl, EGL_OPENGL_API, out);
+}
+#endif
 
 static uint32_t gfx_ctx_wl_get_flags(void *data)
 {
@@ -771,5 +782,16 @@ const gfx_ctx_driver_t gfx_ctx_wayland = {
    NULL,
    gfx_ctx_wl_create_surface,
    gfx_ctx_wl_destroy_surface,
-   gfx_ctx_wl_presentable
+   gfx_ctx_wl_presentable,
+   NULL, /* last_present_time */
+   NULL, /* release_current */
+#ifdef HAVE_EGL
+   gfx_ctx_wl_shared_context_new,
+   egl_shared_context_bind,
+   egl_shared_context_free
+#else
+   NULL, /* shared_context_new */
+   NULL, /* shared_context_bind */
+   NULL  /* shared_context_free */
+#endif
 };

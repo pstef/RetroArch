@@ -1750,11 +1750,18 @@ static bool winraw_joypad_create_msg_window(void)
 {
    WNDCLASSEXA wc;
 
-   memset(&wc, 0, sizeof(wc));
    wc.cbSize        = sizeof(wc);
+   wc.style         = 0;
    wc.lpfnWndProc   = winraw_joypad_joypad_wndproc;
-   wc.hInstance      = GetModuleHandle(NULL);
-   wc.lpszClassName  = "RetroArchRawInputJoypad";
+   wc.cbClsExtra    = 0;
+   wc.cbWndExtra    = 0;
+   wc.hInstance     = GetModuleHandle(NULL);
+   wc.hIcon         = NULL;
+   wc.hCursor       = NULL;
+   wc.hbrBackground = NULL;
+   wc.lpszMenuName  = NULL;
+   wc.lpszClassName = "RetroArchRawInputJoypad";
+   wc.hIconSm       = NULL;
 
    if (!RegisterClassExA(&wc))
    {
@@ -1845,8 +1852,6 @@ static void winraw_joypad_enumerate_devices(void)
 
 static void *winraw_joypad_joypad_init(void *data)
 {
-   unsigned i;
-
    memset(winraw_joypad_pads, 0, sizeof(winraw_joypad_pads));
    memset(winraw_joypad_held, 0, sizeof(winraw_joypad_held));
    winraw_joypad_pad_count      = 0;
@@ -1873,7 +1878,7 @@ static void *winraw_joypad_joypad_init(void *data)
    }
 
 #if defined(HAVE_DINPUT) || defined(HAVE_WINRAWINPUT)
-   winraw_joypad_xinput_own = config_get_ptr()->bools.input_winraw_xinput_enable;
+   winraw_joypad_xinput_own = input_config_get_winraw_xinput_enable();
 #endif
    if (winraw_joypad_xinput_own)
       winraw_joypad_xinput_load();
@@ -2063,7 +2068,8 @@ static int16_t winraw_joypad_joypad_axis(unsigned port, uint32_t joyaxis)
 /* This mirrors the xinput approach: pack hat state into high bits. */
 static int16_t winraw_joypad_joypad_state(
       rarch_joypad_info_t *joypad_info,
-      const struct retro_keybind *binds,
+      const uint16_t *joykeys,
+      const uint32_t *joyaxes,
       unsigned port)
 {
    unsigned i;
@@ -2094,12 +2100,8 @@ static int16_t winraw_joypad_joypad_state(
    for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
    {
       /* Auto-bind fallback */
-      const uint64_t joykey  = (binds[i].joykey  != NO_BTN)
-                             ?  binds[i].joykey
-                             :  joypad_info->auto_binds[i].joykey;
-      const uint32_t joyaxis = (binds[i].joyaxis != AXIS_NONE)
-                             ?  binds[i].joyaxis
-                             :  joypad_info->auto_binds[i].joyaxis;
+      const uint64_t joykey  = joykeys[i];
+      const uint32_t joyaxis = joyaxes[i];
 
       /* --- Inlined button check --- */
       if ((uint16_t)joykey != NO_BTN)
@@ -2233,11 +2235,9 @@ static void winraw_joypad_player_lights(void)
 #if defined(HAVE_DINPUT) || defined(HAVE_WINRAWINPUT)
    static unsigned tick;
    unsigned slot, u;
-   settings_t *settings;
 
    if ((tick++ & 31) || !winraw_joypad_out_writer)
       return;
-   settings = config_get_ptr();
    for (slot = 0; slot < MAX_USERS; slot++)
    {
       winraw_joypad_out_t *out = &winraw_joypad_out[slot];
@@ -2245,9 +2245,9 @@ static void winraw_joypad_player_lights(void)
 
       if (!out->present || out->xinput)
          continue;
-      if (settings->bools.input_winraw_player_lights)
+      if (input_config_get_winraw_player_lights())
          for (u = 0; u < MAX_USERS; u++)
-            if (settings->uints.input_joypad_index[u] == slot)
+            if (input_config_get_joypad_index(u) == slot)
             {
                player = (int)u + 1;
                break;

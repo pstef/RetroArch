@@ -59,13 +59,15 @@ static UINT WINAPI fake_GetRawInputDeviceList(PRAWINPUTDEVICELIST list,
 /* The frontend, as far as the driver links against it. */
 uint8_t g_win32_flags;
 ui_window_win32_t main_window;
-retro_keybind_set input_config_binds[MAX_USERS];
-retro_keybind_set input_autoconf_binds[MAX_USERS];
+struct retro_keybind *input_config_binds[MAX_USERS];
+struct retro_keybind *input_autoconf_binds[MAX_USERS];
 enum retro_key rarch_keysym_lut[RETROK_LAST];
 const struct rarch_key_map rarch_key_map_winraw[] = { { 0, RETROK_UNKNOWN } };
 static settings_t stub_settings;
 static struct menu_state stub_menu;
 settings_t *config_get_ptr(void) { return &stub_settings; }
+/* the settings a driver asks for by name, read from the ones above */
+#include "../input_config_stubs.h"
 
 /* A port's keyboard, as the frontend works it out from the port's pin
  * and number: the rule itself (input/common/input_device_pins.h), fed
@@ -112,6 +114,7 @@ unsigned input_mouse_port_index(unsigned port)
    return choice[port] < 0 ? MAX_INPUT_DEVICES : (unsigned)choice[port];
 }
 struct menu_state *menu_state_get_ptr(void) { return &stub_menu; }
+bool menu_driver_alive(void) { return (stub_menu.flags & MENU_ST_FLAG_ALIVE) != 0; }
 void RARCH_LOG(const char *fmt, ...) { (void)fmt; }
 void RARCH_DBG(const char *fmt, ...) { (void)fmt; }
 void RARCH_ERR(const char *fmt, ...) { (void)fmt; }
@@ -140,13 +143,21 @@ void task_set_flags(retro_task_t *task, uint8_t flags, bool set)
 bool video_driver_get_viewport_info(struct video_viewport *vp)
 { (void)vp; return false; }
 bool video_driver_translate_coord_viewport(struct video_viewport *vp,
-      int mouse_x, int mouse_y, int16_t *res_x, int16_t *res_y,
-      int16_t *res_screen_x, int16_t *res_screen_y, bool report_oob)
+      int mouse_x, int mouse_y, uint32_t *res_pos, uint32_t *res_screen_pos,
+      bool report_oob)
 {
-   (void)vp; (void)mouse_x; (void)mouse_y; (void)res_x; (void)res_y;
-   (void)res_screen_x; (void)res_screen_y; (void)report_oob;
+   (void)vp; (void)mouse_x; (void)mouse_y; (void)res_pos;
+   (void)res_screen_pos; (void)report_oob;
    return false;
 }
+/* The driver hands its mice and touches to the frontend at its poll. */
+void input_driver_publish_pointers(const input_pointer_frame_t *frames,
+      unsigned count, unsigned flags)
+{ (void)frames; (void)count; (void)flags; }
+void input_driver_publish_touches(const uint32_t *pos, unsigned count,
+      unsigned present, unsigned down)
+{ (void)pos; (void)count; (void)present; (void)down; }
+unsigned input_driver_pointer_read_as(unsigned i) { (void)i; return 0; }
 uintptr_t video_driver_window_get(void) { return 0; }
 void win32_clip_window(bool grab) { (void)grab; }
 void win32_hotplug_arm(void) { }
@@ -207,15 +218,14 @@ int main(void)
    if (!wr)
       return 1;
    /* focused: without the focus the poll lets go of mouse buttons */
-   winraw_focus = true;
+   retro_atomic_store_release_int(&winraw_focus_flag, 1);
    winraw_poll(wr);
 
    /* it has moved and has a button down */
    a = index_of(M(1));
-   g_mice[a].x      = 123;
-   g_mice[a].y      = 456;
-   g_mice[a].flags  = WRAW_MOUSE_FLG_BTN_L;
-   g_mice[a].device = RETRO_DEVICE_LIGHTGUN;
+   g_mice[a].pos    = VIDEO_POS_PACK(123, 456);
+   retro_atomic_store_relaxed_int(&g_mice[a].buttons, WRAW_MOUSE_FLG_BTN_L);
+   retro_atomic_store_relaxed_int(&g_mice[a].device, RETRO_DEVICE_LIGHTGUN);
 
    /* ---- a second mouse is plugged in ----------------------------- */
    fake_mice[1] = M(2);
@@ -232,21 +242,22 @@ int main(void)
    b = index_of(M(2));
    CHECK(a >= 0 && b >= 0, "the two mice are not both in the list");
    if (a >= 0)
-      CHECK(g_mice[a].x == 123 && g_mice[a].y == 456
-            && g_mice[a].flags == WRAW_MOUSE_FLG_BTN_L
-            && g_mice[a].device == RETRO_DEVICE_LIGHTGUN,
+      CHECK(g_mice[a].pos == VIDEO_POS_PACK(123, 456)
+            && retro_atomic_load_relaxed_int(&g_mice[a].buttons) == WRAW_MOUSE_FLG_BTN_L
+            && retro_atomic_load_relaxed_int(&g_mice[a].device) == RETRO_DEVICE_LIGHTGUN,
             "the mouse that was there lost its state: %ld,%ld flags %#x device %d",
-            (long)g_mice[a].x, (long)g_mice[a].y, g_mice[a].flags, g_mice[a].device);
+            (long)VIDEO_POS_X(g_mice[a].pos), (long)VIDEO_POS_Y(g_mice[a].pos),
+            retro_atomic_load_relaxed_int(&g_mice[a].buttons), retro_atomic_load_relaxed_int(&g_mice[a].device));
    if (b >= 0)
    {
       /* the device type that makes a report move by its delta */
-      g_mice[b].device = RETRO_DEVICE_MOUSE;
+      retro_atomic_store_relaxed_int(&g_mice[b].device, RETRO_DEVICE_MOUSE);
       move(M(2), 7, -2);
       winraw_poll(wr);
       b = index_of(M(2));
-      CHECK(wr->mice[b].dlt_x == 7 && wr->mice[b].dlt_y == -2,
+      CHECK(VIDEO_POS_X(wr->mice[b].dlt) == 7 && VIDEO_POS_Y(wr->mice[b].dlt) == -2,
             "the new mouse's next report read %d,%d, not 7,-2",
-            (int)wr->mice[b].dlt_x, (int)wr->mice[b].dlt_y);
+            (int)VIDEO_POS_X(wr->mice[b].dlt), (int)VIDEO_POS_Y(wr->mice[b].dlt));
    }
    printf("   ok   a mouse plugged in: in the list after the poll its first report came in, the old one keeps its state\n");
 

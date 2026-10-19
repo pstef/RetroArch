@@ -788,6 +788,7 @@ static const struct
    char s_56e1b336[18];
    char s_313d15c0[8];
    char s_e9f0dd82[33];
+   char s_0bd714f7[7];
    char s_72765a06[12];
    char s_72765a07[12];
    char s_72765a08[12];
@@ -1117,7 +1118,6 @@ static const struct
    char s_5e519829[24];
 #endif
 #endif
-   char s_f228c6c5[18];
    char s_11926382[20];
    char s_645ae416[26];
    char s_df92f5b5[47];
@@ -1723,7 +1723,6 @@ static const struct
    char s_ccfe26d1[20];
    char s_728ca1d3[7];
    char s_5f612db6[20];
-   char s_9f29f708[26];
    char s_a9145c83[11];
    char s_22f52844[13];
    char s_06842e2b[12];
@@ -2112,6 +2111,9 @@ static const struct
    char s_4b582a0c[24];
    char s_61213f1d[18];
    char s_95e4b29f[69];
+   char s_60258de0[6];
+   char s_caf61308[9];
+   char s_c7a27b20[9];
    char s_317b17ed[11];
    char s_94c8d15f[11];
    char s_1f66aac3[10];
@@ -2151,6 +2153,8 @@ static const struct
    char s_f57f6158[17];
    char s_69b801ef[12];
    char s_52e3d6ea[31];
+   char s_2c868ae4[6];
+   char s_9c535394[6];
    char s_a9c8430e[22];
    char s_f5911f43[35];
    char s_9017e0d3[26];
@@ -2177,6 +2181,7 @@ static const struct
    char s_552163d9[33];
    char s_ef3d53d8[25];
    char s_6dcc2f9f[16];
+   char s_d3c5c0e9[3];
    char s_48431da6[6];
    char s_21d7a1f6[6];
    char s_d2fe3ed2[16];
@@ -2185,7 +2190,6 @@ static const struct
    char s_c017f975[9];
    char s_730df420[12];
    char s_bcddf275[9];
-   char s_258060bf[14];
    char s_f90edcc2[64];
 #if defined(RARCH_MOBILE)
    char s_774121c7[49];
@@ -2625,7 +2629,6 @@ static const struct
    char s_74d87c7a[47];
    char s_12adb1e7[45];
    char s_070529d4[57];
-   char s_30d1fc05[46];
 #ifdef GEKKO
    char s_3180dcf5[59];
 #endif
@@ -2666,7 +2669,6 @@ static const struct
    char s_47df0525[70];
    char s_03e272fc[40];
    char s_5c2cc60f[99];
-   char s_d6d8d4be[75];
    char s_e86d2704[83];
    char s_dda608b5[351];
    char s_6f5a032a[63];
@@ -2798,7 +2800,6 @@ static const struct
    char s_6435c857[52];
 #endif
 #endif
-   char s_01efec73[46];
    char s_d3fc9970[47];
    char s_740bd7c4[54];
    char s_f052dae3[77];
@@ -3066,7 +3067,6 @@ static const struct
    char s_14b5b145[102];
    char s_c7c09eb0[101];
    char s_6f122164[64];
-   char s_61942cf6[58];
    char s_6b7e9271[130];
    char s_68b6e245[61];
    char s_3bb4fbf9[126];
@@ -3624,6 +3624,7 @@ static const struct
    char s_543fcabd[15];
    char s_59212b5f[13];
    char s_f26b6cff[25];
+   char s_a63c824a[7];
    char s_a9f3b2c3[11];
    char s_0e7aca8a[17];
    char s_ab1afe7c[15];
@@ -5015,6 +5016,7 @@ static const struct
    "Y D\303\274\304\237mesi (Sol)",
    "Tu\305\237 %s",
    "Klavye Kontrolc\303\274 E\305\237leme T\303\274r\303\274",
+   "T\303\274m\303\274",
    "Silah Aux A",
    "Silah Aux B",
    "Silah Aux C",
@@ -5347,7 +5349,6 @@ static const struct
    "'Diski \303\207\304\261kar' G\303\266ster",
 #endif
 #endif
-   "'Yard\304\261m' G\303\266ster",
    "'Bilgileri' G\303\266ster",
    "'\304\260\303\247erik Y\303\274kle' G\303\266ster",
    "\"\304\260\303\247erik Y\303\274kle\" Ba\305\237lang\304\261\303\247 \342\200\213\342\200\213Bil"
@@ -5976,7 +5977,6 @@ static const struct
    "Tam Say\304\261 \303\226l\303\247e\304\237i",
    "KAPALI",
    "Ba\305\237lang\304\261\303\247 Dizini",
-   "Yap\304\261land\304\261rma Dosyalar\304\261",
    "Tema Rengi",
    "Elma Ye\305\237ili",
    "Klasik Mavi",
@@ -6370,6 +6370,9 @@ static const struct
    "Bildirim Konumu (Dikey)",
    "Monit\303\266r \304\260ndeksi",
    "Android ve iOS cihazlarda \303\247entik \303\274zerinde tam ekran\304\261 etkinle\305\237tir",
+   "Daima",
+   "Otomatik",
+   "Otomatik",
    "180 derece",
    "270 derece",
    "90 derece",
@@ -6409,6 +6412,8 @@ static const struct
    "D\303\274\305\237\303\274k \303\226l\303\247ek",
    "\303\226l\303\247ekleme",
    "D\303\266nen tarama \303\247izgisi taklidi",
+   "Yatay",
+   "Dikey",
    "Video G\303\266lgelendirici",
    "Otomatik G\303\266lgelendirici Gecikmesi",
    "Video G\303\266lgelendiricileri",
@@ -6435,6 +6440,7 @@ static const struct
    "Payla\305\237\304\261lan Donan\304\261m \304\260\303\247eri\304\237i",
    "\304\260ki \303\207izgili Filtreleme",
    "Yumu\305\237ak Filtre",
+   "2B",
    "\303\226zel",
    "Yerel",
    "Yay\304\261n Kalitesi",
@@ -6443,7 +6449,6 @@ static const struct
    "Otomatik",
    "E\305\237itleyici",
    "Videolar",
-   "Bask\304\261n Video",
    "Metal Arg\303\274man Arabelleklerini Kullan (Yeniden ba\305\237lat\304\261lmal\304\261)",
 #if defined(RARCH_MOBILE)
    "G\303\266r\303\274n\303\274m Ba\304\237lant\304\261 Noktas\304\261 X (Portre Y\303\266n\303\274)",
@@ -7139,7 +7144,6 @@ static const struct
    "\303\207\304\261k\304\261\305\237 ses seviyesi seviyesini art\304\261r\304\261r.",
    "Tam i\303\247erik kare h\304\261z\304\261n\304\261 e\305\237itlemesini a\303\247ar/kapat\304\261"
    "r.",
-   "RetroArch taraf\304\261ndan tan\304\261nan fiziksel fare.",
 #ifdef GEKKO
    "Wiimote light gun h\304\261z\304\261 i\303\247in x/y \303\266l\303\247e\304\237ini ayarlay\304"
    "\261n.",
@@ -7220,8 +7224,6 @@ static const struct
    "Girdi e\305\237lemeleri bu dizinde saklan\304\261r.",
    "Mevcut \303\247ekirdek i\303\247in ayarlanm\304\261\305\237 yeniden e\305\237lenen ba\304\237lar"
    "la giri\305\237 ba\304\237lar\304\261n\304\261 \303\266zelle\305\237tirir.",
-   "Hangi \303\247ekirdeki\304\237in hangi port \303\274st\303\274nden girdi alaca\304\237\304\261n"
-   "\304\261 belirtir %u.",
    "E\305\237le\305\237meler yaln\304\261zca kaydedildikleri aktif kontrolc\303\274 i\303\247in ge"
    "\303\247erli olacakt\304\261r.",
    "Sanal RetroPad ile fiziksel bir giri\305\237 cihaz\304\261n\304\261n nas\304\261l e\305\237lendi"
@@ -7486,7 +7488,6 @@ static const struct
    "Ana Men\303\274de 'Diski \303\207\304\261kar' se\303\247ene\304\237ini g\303\266sterin.",
 #endif
 #endif
-   "Ana Men\303\274de 'Yard\304\261m' se\303\247ene\304\237ini g\303\266sterin.",
    "Ana Men\303\274de 'Bilgiler' se\303\247ene\304\237ini g\303\266sterin.",
    "Ana Men\303\274de '\304\260\303\247erik Y\303\274kle' se\303\247ene\304\237ini g\303\266sterin.",
    "\304\260\303\247erik y\303\274klerken k\304\261sa bir tan\304\261t\304\261m geri bildirimi anima"
@@ -8003,7 +8004,6 @@ static const struct
    "ksek de\304\237erler geri sarma h\304\261z\304\261n\304\261 art\304\261r\304\261r.",
    "Dosya Taray\304\261c\304\261 i\303\247in Ba\305\237lang\304\261\303\247 \342\200\213\342\200\213"
    "Dizini'ni ayarlay\304\261n.",
-   "Varsay\304\261lan yap\304\261land\304\261rma dosyas\304\261 bu dizinde saklan\304\261r.",
    "Farkl\304\261 bir renk temas\304\261 se\303\247in. '\303\226zel' se\303\247imi, men\303\274 tema"
    "s\304\261 \303\266nceden ayarlanm\304\261\305\237 dosyalar\304\261n kullan\304\261m\304\261n\304"
    "\261 m\303\274mk\303\274n k\304\261lar.",
@@ -8839,6 +8839,7 @@ static const struct
    "Zaman a\305\237\304\261m\304\261",
    "Hile Giri\305\237i",
    "Hile Dosya \304\260smi Giri\305\237i",
+   "Anl\304\261k",
    "Parola Gir",
    "Parola yanl\304\261\305\237.",
    "Parola do\304\237ru.",
@@ -9171,7 +9172,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_tr_blob_check[
-      (sizeof(msg_hash_tr_blob) == (170273u
+      (sizeof(msg_hash_tr_blob) == (170043u
 #ifdef ANDROID
        + 340u
 #endif
@@ -10318,6 +10319,7 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_A,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_B,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_C,
@@ -10647,7 +10649,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_EJECT_DISC,
 #endif
 #endif
-   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -11252,7 +11253,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_APPLE_GREEN,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_CLASSIC_BLUE,
@@ -11641,6 +11641,9 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED_ROTATED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_VERTICAL,
@@ -11680,6 +11683,8 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_HORIZONTAL,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SCREEN_LAYOUT_VERTICAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DELAY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DIR,
@@ -11706,6 +11711,7 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SHARED_CONTEXT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SMOOTH,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SOFT_FILTER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_STEREO_MODE_2D,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_STREAMING_MODE_CUSTOM,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_STREAMING_MODE_LOCAL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_STREAM_QUALITY,
@@ -11714,7 +11720,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SYNCHRONIZATION_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_TAB,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_THREADED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
 #if defined(RARCH_MOBILE)
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
@@ -12154,7 +12159,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_DOWN,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_UP,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VRR_RUNLOOP_TOGGLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_INDEX,
 #ifdef GEKKO
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_SCALE,
 #endif
@@ -12195,7 +12199,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_QUIT_GAMEPAD_COMBO,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_BINDS_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_PORT,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RETROPAD_BINDS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RUMBLE_GAIN,
@@ -12327,7 +12330,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_EJECT_DISC,
 #endif
 #endif
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -12595,7 +12597,6 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_GRANULARITY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_SUBLABEL_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_THEME_PRESET,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_SHOW_START_SCREEN,
@@ -13153,6 +13154,7 @@ static const uint32_t msg_hash_tr_ids[] =
    (uint32_t)MSG_INPUT_BIND_TIMEOUT,
    (uint32_t)MSG_INPUT_CHEAT,
    (uint32_t)MSG_INPUT_CHEAT_FILENAME,
+   (uint32_t)MSG_INPUT_COMBO_INSTANT,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_NOK,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_OK,

@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 TARGET := gfx_widgets_sanitize_test
 
 # Path back to the repo root from this sample dir.  Links the real
@@ -20,7 +22,7 @@ SOURCES := gfx_widgets_sanitize_test.c \
            $(LIBRETRO_COMM_DIR)/lists/string_list.c \
            $(LIBRETRO_COMM_DIR)/time/rtime.c
 
-CFLAGS  += -Wall -std=gnu99 -g -O1 \
+CFLAGS  += -Wall -std=gnu99 -g1 -O1 \
            -DHAVE_THREADS -DHAVE_MENU -DHAVE_GFX_WIDGETS \
            -I$(REPO_ROOT) \
            -I$(LIBRETRO_COMM_DIR)/include
@@ -31,7 +33,7 @@ LDFLAGS += -lpthread -lm
 # everything set above, -DHAVE_GFX_WIDGETS included.
 CFLAGS += $(EXTRA_CFLAGS)
 
-OBJS := $(SOURCES:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
 ifneq ($(SANITIZER),)
    CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer $(CFLAGS)
@@ -41,6 +43,10 @@ endif
 all: $(TARGET)
 
 %.o: %.c
+	$(CC) -c -o $@ $< $(CFLAGS)
+
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
 	$(CC) -c -o $@ $< $(CFLAGS)
 
 $(TARGET): $(OBJS)
@@ -57,6 +63,7 @@ sweep:
 	@echo "sweep clean"
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(TARGET) $(OBJS)
 
 .PHONY: all sweep clean

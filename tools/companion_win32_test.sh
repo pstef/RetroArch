@@ -35,6 +35,7 @@ CSRCS="ui/companion/companion_core.c \
        ui/companion/test/companion_core_test.c \
        playlist.c core_option_manager.c $LC/lists/nested_list.c $LC/file/config_file_io.c \
        $LC/formats/json/rjson.c $LC/formats/image_texture.c $LC/formats/image_transfer.c \
+       $LC/formats/video_player.c \
        $LC/formats/data_transfer.c $LC/formats/png/rpng.c $LC/formats/png/rpng_apng.c \
        $LC/formats/png/rpng_encode.c $LC/file/rpng_file.c $LC/formats/tga/rtga.c $LC/memmap/memmap.c $LC/memory/mem_stats.c \
        $LC/streams/file_stream.c $LC/streams/file_stream_transforms.c $LC/streams/interface_stream.c \
@@ -47,15 +48,18 @@ CSRCS="ui/companion/companion_core.c \
        $LC/compat/compat_posix_string.c $LC/compat/compat_strcasestr.c $LC/compat/fopen_utf8.c \
        $LC/encodings/encoding_utf.c $LC/encodings/encoding_crc32.c $LC/encodings/encoding_deflate.c \
        $LC/hash/lrc_hash.c $LC/time/rtime.c $LC/features/features_cpu.c $LC/rthreads/rthreads.c \
+       $LC/rthreads/tpool.c \
        $LC/rthreads/retro_eventcount.c"
 
 OBJS=""
 for f in $CSRCS ui/drivers/ui_win32_companion.c ui/companion/test/companion_win32_test.c; do
    o="$OUT/$(echo "$f" | tr '/' '_').o"
-   $CC -std=gnu99 -O1 -g -w $INC $DEFS -c "$f" -o "$o"
+   $CC -std=gnu99 -O1 -g1 -w $INC $DEFS -c "$f" -o "$o"
    OBJS="$OBJS $o"
 done
-$CC -o "$OUT/companion_win32_test.exe" $OBJS -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lgdi32 -luser32 -lws2_32 -lpthread
+# realloc and calloc are wrapped so the test can fail one (see the
+# test's __wrap_ functions).
+$CC -o "$OUT/companion_win32_test.exe" $OBJS -Wl,--wrap=realloc,--wrap=calloc -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lgdi32 -luser32 -lws2_32 -lpthread
 
 # Headless: Wine needs a display; Xvfb provides one. Wine's own noise
 # on stderr is dropped; the harness prints to stdout.

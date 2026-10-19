@@ -356,7 +356,6 @@ static void test_joypad_autodetect_remove(unsigned autoconf_pad)
 
 static void *test_joypad_init(void *data)
 {
-   settings_t *settings = config_get_ptr();
    unsigned i;
 
    if (!input_test_steps)
@@ -365,7 +364,7 @@ static void *test_joypad_init(void *data)
    if (!input_test_steps)
       return NULL;
 
-   input_test_file_read(settings->paths.test_input_file_joypad);
+   input_test_file_read(input_config_get_test_input_file(true));
    if (last_test_step > MAX_TEST_STEPS)
       last_test_step = 0;
 
@@ -417,7 +416,8 @@ static int16_t test_joypad_axis(unsigned port_num, uint32_t joyaxis)
 
 static int16_t test_joypad_state(
       rarch_joypad_info_t *joypad_info,
-      const struct retro_keybind *binds,
+      const uint16_t *joykeys,
+      const uint32_t *joyaxes,
       unsigned port)
 {
 
@@ -429,9 +429,7 @@ static int16_t test_joypad_state(
    {
 	   for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
 	   {
-		   /* Auto-binds are per joypad, not per user. */
-		   const uint16_t joykey  = (binds[i].joykey != NO_BTN)
-			   ? binds[i].joykey  : joypad_info->auto_binds[i].joykey;
+		   const uint16_t joykey  = joykeys[i];
 		   /* Test input driver uses same button layout internally as RA, so no conversion is needed */
 		   if (joykey != NO_BTN && (test_joypads[port_idx].button_state & (1 << i)))
 			   ret |= ( 1 << i);
@@ -467,7 +465,6 @@ static void test_joypad_poll(void)
          {
 #ifdef HAVE_CONFIGFILE
             unsigned port        = input_test_steps[i].param_num;
-            settings_t *settings = config_get_ptr();
             /* A controller added by an earlier step is only there
              * once its autoconfig task has been applied, and frames
              * do not wait for that.  The menu has no entry to save
@@ -478,7 +475,7 @@ static void test_joypad_poll(void)
                break;
             if (port < MAX_USERS)
             {
-               unsigned dev     = settings->uints.input_joypad_index[port];
+               unsigned dev     = input_config_get_joypad_index(port);
                const char *name = (dev < MAX_USERS)
                   ? input_config_get_device_name(dev) : NULL;
                RARCH_LOG("[Test joypad] Save profile for port %u: %s.\n",
@@ -498,7 +495,7 @@ static void test_joypad_poll(void)
             if (input_autoconfigure_pending())
                break;
             input_test_steps[i].handled = true;
-            command_event(CMD_EVENT_QUIT, NULL);
+            input_driver_platform_request(INPUT_PLATFORM_QUIT);
             break;
          }
          else if (   input_test_steps[i].action >= JOYPAD_TEST_COMMAND_BUTTON_PRESS_FIRST

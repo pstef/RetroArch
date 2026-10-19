@@ -19,6 +19,9 @@
 #include <stdint.h>
 
 #include "glslang_util.h"
+/* Names the reflection table below needs in every build, with or
+ * without the compiler. */
+#include "slang_rect.h"
 #if defined(HAVE_GLSLANG)
 #include "slang_cache.h"
 #endif
@@ -89,7 +92,18 @@ static const char *semantic_uniform_names[] = {
    "Gyroscope",
    "Accelerometer",
    "AccelerometerRest",
-   "SwapCount"
+   "SwapCount",
+   SLANG_RECT_NAME_RECT,
+   SLANG_RECT_NAME_CLAMP,
+   SLANG_RECT_NAME_TEXELS,
+   "PaperWhiteNits",
+   "PeakNits",
+   "MaxNits",
+   "EnableHDR",
+   "MinNits",
+   "TonemapOperator",
+   "SourceHDR",
+   "Passthrough"
 };
 
 static bool slang_reflect(
@@ -466,6 +480,10 @@ static bool slang_process_reflection(
       const semantics_map_t* map,
       pass_semantics_t*      out)
 {
+   static const float unknown_min_nits = 0.0f;
+   static const uint32_t rational_tonemap_operator = 0;
+   static const uint32_t non_pq_source_hdr = 0;
+   static const uint32_t no_hdr_ownership = 0;
    int semantic;
    unsigned i;
    bool ret                    = false;
@@ -568,7 +586,16 @@ static bool slang_process_reflection(
          uniform_sem_t uniform;
          enum slang_semantic _semantic   = (enum slang_semantic)semantic;
 
-         uniform.data = map->uniforms[semantic];
+         uniform.data  = map->uniforms[semantic];
+         uniform.param = NULL;
+         if (_semantic == SLANG_SEMANTIC_MIN_NITS && !uniform.data)
+            uniform.data = (void*)&unknown_min_nits;
+         if (_semantic == SLANG_SEMANTIC_TONEMAP_OPERATOR && !uniform.data)
+            uniform.data = (void*)&rational_tonemap_operator;
+         if (_semantic == SLANG_SEMANTIC_SOURCE_HDR && !uniform.data)
+            uniform.data = (void*)&non_pq_source_hdr;
+         if (_semantic == SLANG_SEMANTIC_PASSTHROUGH && !uniform.data)
+            uniform.data = (void*)&no_hdr_ownership;
          /* A backend that has not wired a source for this semantic leaves
           * the slot NULL; the shader then reads its zero-initialised
           * default rather than the upload copying from NULL. */
@@ -607,7 +634,8 @@ static bool slang_process_reflection(
       {
          uniform_sem_t uniform;
 
-         uniform.data = &shader_info->parameters[i].current;
+         uniform.data  = NULL;
+         uniform.param = &shader_info->parameters[i];
          uniform.size = sizeof(float);
          strlcpy(uniform.id, slang_map_semantic_name(sl_reflection.semantic_map, SLANG_SEMANTIC_FLOAT_PARAMETER, i), sizeof(uniform.id));
 
@@ -723,8 +751,9 @@ static bool slang_process_reflection(
                "OriginalSize", "SourceSize", "OriginalHistorySize", "PassOutputSize", "PassFeedbackSize",
             };
 
-            uniform.data = (void*)((uintptr_t)map->textures[semantic].size
+            uniform.data  = (void*)((uintptr_t)map->textures[semantic].size
                   + index * map->textures[semantic].size_stride);
+            uniform.param = NULL;
             uniform.size = 4 * sizeof(float);
             if (semantic < (int)SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY)
                strlcpy(uniform.id, names[_semantic], sizeof(uniform.id));
@@ -1374,7 +1403,7 @@ bool slang_preprocess_parse_parameters_meta(const glslang_meta *meta,
       p->minimum = meta->parameters[i].minimum;
       p->maximum = meta->parameters[i].maximum;
       p->step    = meta->parameters[i].step;
-      p->current = meta->parameters[i].initial;
+      video_shader_param_set(p, meta->parameters[i].initial);
    }
 
    return true;
@@ -1440,6 +1469,7 @@ bool slang_process(
    spvc_compiler_options   vs_options  = NULL;
    spvc_compiler_options   ps_options  = NULL;
    spvc_backend            backend     = SPVC_BACKEND_GLSL;
+   const char             *backend_name = "GLSL";
    const char             *vs_code     = NULL;
    const char             *ps_code     = NULL;
    const spvc_reflected_resource *list = NULL;
@@ -1459,6 +1489,42 @@ bool slang_process(
    if (!*pass->alias && output.meta.name[0])
       strlcpy(pass->alias, output.meta.name, sizeof(pass->alias) - 1);
 
+   /* Every pass samples the frame as the first does; one with the
+    * filter unspecified as the smooth setting the driver gives. */
+   out->frame_in_place = false;
+   out->frame_unspec   = false;
+   out->frame_smooth   = semantics_map->frame_smooth;
+   if (semantics_map->uniforms[SLANG_SEMANTIC_ORIGINAL_RECT])
+   {
+      enum slang_rect_result res;
+      enum slang_rect_wrap   wrap   = SLANG_RECT_WRAP_BORDER;
+      unsigned               filter = shader_info->pass[0].filter;
+      if (filter == RARCH_FILTER_UNSPEC)
+         filter = semantics_map->frame_smooth
+            ? RARCH_FILTER_LINEAR : RARCH_FILTER_NEAREST;
+      switch (shader_info->pass[0].wrap)
+      {
+         case RARCH_WRAP_EDGE:
+            wrap = SLANG_RECT_WRAP_EDGE;
+            break;
+         case RARCH_WRAP_REPEAT:
+            wrap = SLANG_RECT_WRAP_REPEAT;
+            break;
+         case RARCH_WRAP_MIRRORED_REPEAT:
+            wrap = SLANG_RECT_WRAP_MIRROR;
+            break;
+         default:
+            break;
+      }
+      res = slang_rect_remap_pass(
+            &output.vertex, &output.vertex_len,
+            &output.fragment, &output.fragment_len,
+            pass_number == 0, filter == RARCH_FILTER_LINEAR, wrap);
+      out->frame_in_place = res != SLANG_RECT_UNSUPPORTED;
+      out->frame_unspec   = res == SLANG_RECT_REWRITTEN
+         && shader_info->pass[0].filter == RARCH_FILTER_UNSPEC;
+   }
+
    out->format          = output.meta.rt_format;
    out->explicit_format = (output.meta.rt_format != SLANG_FORMAT_UNKNOWN);
 
@@ -1474,6 +1540,11 @@ bool slang_process(
          out->format = SLANG_FORMAT_R8G8B8A8_UNORM;
    }
 
+   out->format = glslang_hdr_output_format(shader_info, pass_number, out->format);
+   if (pass_number + 1 == shader_info->passes
+         && video_shader_get_hdr_mode(shader_info) > 0)
+      out->explicit_format = true;
+
    pass->source.string.vertex   = NULL;
    pass->source.string.fragment = NULL;
 
@@ -1481,15 +1552,12 @@ bool slang_process(
    {
       case RARCH_SHADER_HLSL:
       case RARCH_SHADER_CG:
-#ifdef HAVE_HLSL
-         backend = SPVC_BACKEND_HLSL;
+         backend      = SPVC_BACKEND_HLSL;
+         backend_name = "HLSL";
          break;
-#else
-         RARCH_ERR("[Slang] HLSL backend not compiled in.\n");
-         goto error;
-#endif
       case RARCH_SHADER_METAL:
-         backend = SPVC_BACKEND_MSL;
+         backend      = SPVC_BACKEND_MSL;
+         backend_name = "MSL";
          break;
       default:
          backend = SPVC_BACKEND_GLSL;
@@ -1654,7 +1722,7 @@ bool slang_process(
    return true;
 
 spvc_error:
-   RARCH_ERR("[Slang] SPIRV-Cross: %s.\n",
+   RARCH_ERR("[Slang] SPIRV-Cross, %s: %s\n", backend_name,
          spvc_context_get_last_error_string(ctx));
 
 error:
@@ -1861,16 +1929,30 @@ static bool validate_type_for_semantic(spvc_type type, enum slang_semantic sem)
          return spvc_type_get_basetype(type) == SPVC_BASETYPE_FP32
             &&  spvc_type_get_vector_size(type)  == 3
             &&  spvc_type_get_columns(type)  == 1;
+      case SLANG_SEMANTIC_ORIGINAL_RECT:
+      case SLANG_SEMANTIC_ORIGINAL_CLAMP:
+      case SLANG_SEMANTIC_ORIGINAL_TEXELS:
+         return spvc_type_get_basetype(type) == SPVC_BASETYPE_FP32
+            &&  spvc_type_get_vector_size(type)  == 4
+            &&  spvc_type_get_columns(type)  == 1;
          /* float */
       case SLANG_SEMANTIC_FLOAT_PARAMETER:
          return spvc_type_get_basetype(type) == SPVC_BASETYPE_FP32
             &&  spvc_type_get_vector_size(type)  == 1
             &&  spvc_type_get_columns(type)  == 1;
+      case SLANG_SEMANTIC_PASSTHROUGH:
+      case SLANG_SEMANTIC_SOURCE_HDR:
+      case SLANG_SEMANTIC_TONEMAP_OPERATOR:
       case SLANG_SEMANTIC_HDR:
          return spvc_type_get_basetype(type) == SPVC_BASETYPE_UINT32
             &&  spvc_type_get_vector_size(type)  == 1
             &&  spvc_type_get_columns(type)  == 1;
       case SLANG_SEMANTIC_PAPER_WHITE_NITS:
+      case SLANG_SEMANTIC_PAPER_WHITE_ALIAS:
+      case SLANG_SEMANTIC_PEAK_NITS:
+      case SLANG_SEMANTIC_MAX_NITS_ALIAS:
+      case SLANG_SEMANTIC_ENABLE_HDR:
+      case SLANG_SEMANTIC_MIN_NITS:
          return spvc_type_get_basetype(type) == SPVC_BASETYPE_FP32
             &&  spvc_type_get_vector_size(type)  == 1
             &&  spvc_type_get_columns(type)  == 1;
@@ -2453,6 +2535,83 @@ static bool slang_reflect(
 #endif
 
    return true;
+}
+
+static bool slang_feedback_name(const struct glslang_last_pass *state,
+      const char *name, bool size)
+{
+   char expected[96];
+   snprintf(expected, sizeof(expected), size ? "PassFeedbackSize%u"
+         : "PassFeedback%u", state->index);
+   if (!strcmp(name, expected))
+      return true;
+   if (!state->name[0])
+      return false;
+   snprintf(expected, sizeof(expected), size ? "%sFeedbackSize"
+         : "%sFeedback", state->name);
+   return !strcmp(name, expected);
+}
+
+bool slang_last_pass_feedback(struct glslang_last_pass *state,
+      const glslang_output *output)
+{
+   spvc_context ctx = NULL;
+   unsigned stage, kind;
+   bool ret = false;
+   if (!state->inspect_feedback || state->needs_target)
+      return true;
+   if (spvc_context_create(&ctx) != SPVC_SUCCESS)
+      return false;
+   for (stage = 0; stage < 2 && !state->needs_target; stage++)
+   {
+      spvc_parsed_ir ir;
+      spvc_compiler compiler;
+      spvc_set active;
+      spvc_resources resources;
+      const uint32_t *words = stage ? output->fragment : output->vertex;
+      size_t length = stage ? output->fragment_len : output->vertex_len;
+      if (spvc_context_parse_spirv(ctx, (const SpvId*)words, length,
+               &ir) != SPVC_SUCCESS
+            || spvc_context_create_compiler(ctx, SPVC_BACKEND_NONE, ir,
+               SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) != SPVC_SUCCESS
+            || spvc_compiler_get_active_interface_variables(compiler,
+               &active) != SPVC_SUCCESS
+            || spvc_compiler_create_shader_resources_for_active_variables(
+               compiler, &resources, active) != SPVC_SUCCESS)
+         goto end;
+      for (kind = 0; kind < 3 && !state->needs_target; kind++)
+      {
+         const spvc_reflected_resource *list;
+         size_t count, i;
+         spvc_resource_type type = kind == 0 ? SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+            : kind == 1 ? SPVC_RESOURCE_TYPE_UNIFORM_BUFFER
+            : SPVC_RESOURCE_TYPE_PUSH_CONSTANT;
+         if (spvc_resources_get_resource_list_for_type(resources, type,
+                  &list, &count) != SPVC_SUCCESS)
+            goto end;
+         for (i = 0; i < count && !state->needs_target; i++)
+         {
+            if (!kind)
+               state->needs_target = slang_feedback_name(state, list[i].name, false);
+            else
+            {
+               const spvc_buffer_range *ranges;
+               size_t num_ranges, j;
+               if (spvc_compiler_get_active_buffer_ranges(compiler, list[i].id,
+                        &ranges, &num_ranges) != SPVC_SUCCESS)
+                  goto end;
+               for (j = 0; j < num_ranges && !state->needs_target; j++)
+                  state->needs_target = slang_feedback_name(state,
+                        spvc_compiler_get_member_name(compiler,
+                           list[i].base_type_id, ranges[j].index), true);
+            }
+         }
+      }
+   }
+   ret = true;
+end:
+   spvc_context_destroy(ctx);
+   return ret;
 }
 
 bool slang_reflect_spirv(const uint32_t *vertex, size_t vertex_len,

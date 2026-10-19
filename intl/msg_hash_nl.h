@@ -767,6 +767,7 @@ static const struct
    char s_56e1b336[14];
    char s_313d15c0[11];
    char s_e9f0dd82[41];
+   char s_0bd714f7[5];
    char s_72765a06[12];
    char s_72765a07[12];
    char s_72765a08[12];
@@ -1097,7 +1098,6 @@ static const struct
    char s_5e519829[22];
 #endif
 #endif
-   char s_f228c6c5[12];
    char s_11926382[18];
    char s_645ae416[20];
    char s_df92f5b5[29];
@@ -1685,7 +1685,6 @@ static const struct
    char s_ccfe26d1[27];
    char s_728ca1d3[4];
    char s_5f612db6[11];
-   char s_9f29f708[22];
    char s_a9145c83[11];
    char s_22f52844[12];
    char s_06842e2b[16];
@@ -2136,6 +2135,10 @@ static const struct
    char s_4b582a0b[27];
    char s_4b582a0c[27];
    char s_95e4b29f[71];
+   char s_60258de0[7];
+   char s_caf61308[12];
+   char s_34b2592a[4];
+   char s_c7a27b20[12];
    char s_317b17ed[6];
    char s_94c8d15f[6];
    char s_de16b5d2[8];
@@ -2207,7 +2210,6 @@ static const struct
    char s_c017f975[12];
    char s_730df420[21];
    char s_bcddf275[8];
-   char s_258060bf[23];
    char s_f90edcc2[49];
    char s_ad14307a[11];
 #if defined(RARCH_MOBILE)
@@ -2666,7 +2668,6 @@ static const struct
    char s_74d87c7a[28];
    char s_12adb1e7[28];
    char s_070529d4[62];
-   char s_30d1fc05[46];
 #ifdef GEKKO
    char s_3180dcf5[48];
 #endif
@@ -2708,7 +2709,6 @@ static const struct
    char s_47df0525[43];
    char s_03e272fc[45];
    char s_5c2cc60f[108];
-   char s_d6d8d4be[75];
    char s_e86d2704[90];
    char s_dda608b5[310];
    char s_6f5a032a[57];
@@ -2848,7 +2848,6 @@ static const struct
    char s_6435c857[54];
 #endif
 #endif
-   char s_01efec73[32];
    char s_d3fc9970[45];
    char s_740bd7c4[47];
    char s_f052dae3[60];
@@ -3127,7 +3126,6 @@ static const struct
    char s_c7c09eb0[95];
    char s_7d4adfaf[33];
    char s_6f122164[42];
-   char s_61942cf6[57];
    char s_6b7e9271[97];
    char s_68b6e245[63];
    char s_3bb4fbf9[110];
@@ -4936,6 +4934,7 @@ static const struct
    "Y knop (left)",
    "Sleutel %s",
    "Toetsenbord controller toewijzigingstype",
+   "Alle",
    "Wapen Aux A",
    "Wapen Aux B",
    "Wapen Aux C",
@@ -5266,7 +5265,6 @@ static const struct
    "Toon 'Disc Uitwerpen'",
 #endif
 #endif
-   "Toon \"Help\"",
    "Toon 'Informatie'",
    "Toon 'Inhoud Laden'",
    "\"Laad Inhoud\" Opstartmelding",
@@ -5860,7 +5858,6 @@ static const struct
    "Schalen in gehele getallen",
    "UIT",
    "Favorieten",
-   "Configuratiebestanden",
    "Kleurthema",
    "Appel Groen",
    "Klassieke blauw",
@@ -6312,6 +6309,10 @@ static const struct
    "OSD Berichten X-as positie",
    "OSD Berichten Y-as positie",
    "Volledig scherm inschakelen over de notch op Android- en iOS-apparaten",
+   "Altijd",
+   "Automatisch",
+   "UIT",
+   "Automatisch",
    "180\302\272",
    "270\302\272",
    "Normaal",
@@ -6383,7 +6384,6 @@ static const struct
    "Automatisch",
    "Audio Synchronizatie",
    "Video's",
-   "Video met Schroefdraad",
    "Gebruik Metal-Argumentbuffers (herstart vereist)",
    "Ontflikker",
 #if defined(RARCH_MOBILE)
@@ -6958,7 +6958,6 @@ static const struct
    "Verlaagt het uitvoervolume.",
    "Verhoogt het uitvoervolume.",
    "Schakelt synchronisatie naar exacte inhoudsframerate aan/uit.",
-   "De fysieke muis zoals herkend door RetroArch.",
 #ifdef GEKKO
    "X/y schaal aanpassen voor de Wiimote light gun.",
 #endif
@@ -7019,7 +7018,6 @@ static const struct
    "Invoer-remaps worden opgeslagen in deze map.",
    "Overschrijf de invoerbindingen met de opnieuw toegewezen bindingen die zijn ingesteld voor de hu"
    "idige core.",
-   "Geeft aan welke core-poort invoer krijgt van frontend controller poort %u.",
    "Remaps zullen alleen van toepassing zijn op de actieve gamepad waarin ze zijn opgeslagen.",
    "Wijzigen hoe de virtuele RetroPad wordt toegewezen aan een fysiek invoerapparaat. Als een invoer"
    "apparaat herkend en automatisch geconfigureerd is, hoeven gebruikers dit menu waarschijnlijk nie"
@@ -7228,7 +7226,6 @@ static const struct
    "De 'Disc Uitwerpen' optie in het Hoofdmenu weergeven.",
 #endif
 #endif
-   "Toon de \"Help\" in het hoofdmenu",
    "Toon de 'Informatie' optie in het Hoofdmenu.",
    "Toon de 'Inhoud Laden' optie in het Hoofdmenu.",
    "Toon een korte lanceeranimatie bij het laden van de inhoud.",
@@ -7613,7 +7610,6 @@ static const struct
    "Het aantal frames om terug te spoelen per stap. Hogere waarden verhogen de terugspoelsnelheid.",
    "Terugspoelinstellingen wijzigen.",
    "Stel de startmap in voor bestandsbrowser.",
-   "Standaard configuratiebestand is opgeslagen in deze map.",
    "Kies een ander kleurenthema. Door 'Aangepast' wordt het menuthema-preset bestanden ingeschakeld.",
    "Selecteer een menu thema voorinstelling in de bestandsbrowser.",
    "Toon opstartscherm in het menu. Dit wordt automatisch uitgeschakeld nadat het programma voor het"
@@ -8648,7 +8644,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_nl_blob_check[
-      (sizeof(msg_hash_nl_blob) == (173585u
+      (sizeof(msg_hash_nl_blob) == (173358u
 #ifdef ANDROID
        + 375u
 #endif
@@ -9847,6 +9843,7 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_A,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_B,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_C,
@@ -10177,7 +10174,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_EJECT_DISC,
 #endif
 #endif
-   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -10764,7 +10760,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_APPLE_GREEN,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_CLASSIC_BLUE,
@@ -11215,6 +11210,10 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_X,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_AUTO,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_REFRESH_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED_ROTATED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_NORMAL,
@@ -11286,7 +11285,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL_AUTO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SYNCHRONIZATION_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_TAB,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_THREADED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VFILTER,
 #if defined(RARCH_MOBILE)
@@ -11745,7 +11743,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_DOWN,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_UP,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VRR_RUNLOOP_TOGGLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_INDEX,
 #ifdef GEKKO
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_SCALE,
 #endif
@@ -11787,7 +11784,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_QUIT_GAMEPAD_COMBO,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_BINDS_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_PORT,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RETROPAD_BINDS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RUMBLE_GAIN,
@@ -11927,7 +11923,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_EJECT_DISC,
 #endif
 #endif
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -12206,7 +12201,6 @@ static const uint32_t msg_hash_nl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_GRANULARITY,
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_SUBLABEL_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_THEME_PRESET,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_SHOW_START_SCREEN,

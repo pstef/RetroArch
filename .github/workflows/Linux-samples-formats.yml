@@ -49,13 +49,34 @@ jobs:
               $pkgs && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -64,8 +85,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -79,7 +103,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build and run dts_lpcm_test (plain, ASan + UBSan)
@@ -112,10 +136,10 @@ jobs:
           # decoder is for: every frame repacked to the plain core,
           # put in the IEC 61937 burst its sample count calls for, and
           # read back out of that burst byte for byte.
-          make clean all
+          make clean && make -j$(nproc) all
           ./dts_lpcm_test
           echo "[pass] dts_lpcm_test"
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./dts_lpcm_test
           echo "[pass] dts_lpcm_test (ASan)"
 
@@ -152,7 +176,7 @@ jobs:
           # paths and report a pass.  That count is kept per format, not
           # just in total, so one decoder quietly ceasing to accept its
           # seed cannot hide behind the other three.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x image_decode_fuzz_test
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 120 ./image_decode_fuzz_test
@@ -217,11 +241,48 @@ jobs:
           # begin on, it must accept before the whole file has arrived
           # (or partial decoding is silently off), and it must be
           # monotonic in the prefix length.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x image_avail_test
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 120 ./image_avail_test
           echo "[pass] image_avail_test"
+
+      - name: AV1 picture tools, frame prefixes, tiles and container packets (ASan + UBSan)
+        working-directory: libretro-common/samples/formats/av1
+        run: |
+          make check SANITIZER=address,undefined
+          python3 fixtures.py
+          python3 tile_fixtures.py
+          python3 frame_fixtures.py
+          python3 picture_fixtures.py
+          python3 reference_fixtures.py
+          python3 grain_fixtures.py
+          python3 state_fixtures.py
+
+      - name: Vulkan AV1 parameters against real streams (ASan + UBSan)
+        working-directory: samples/gfx/vulkan_video_caps
+        run: |
+          make av1_params_test SANITIZER=address,undefined
+          python3 av1_fixtures.py
+
+      - name: VP9 sessions and WebM GPU dispatch (ASan + UBSan)
+        working-directory: libretro-common/samples/formats/vp9
+        run: make check stream-check SANITIZER=address,undefined
+
+      - name: Build and run video_hdr_fp16_test (ASan + UBSan + LSan)
+        shell: bash
+        working-directory: samples/formats/video_hdr_fp16
+        run: |
+          set -eu
+          # HDR10 video to linear scRGB half floats: HEVC Main10 in MP4
+          # and VP9 profile 2 in WebM, tagged PQ, decode flat grey onto
+          # the PQ EOTF when asked into the caller's frame; their
+          # SDR-tagged twins, and any stream decoding into its own
+          # canvas, keep the 32-bit paths. Fixtures made with ffmpeg
+          # (libx265, libvpx-vp9) from known 10-bit grey.
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+             timeout 120 ./video_hdr_fp16_test
 
       - name: Build and run image_tile_gx_test (ASan + UBSan + LSan)
         shell: bash
@@ -235,7 +296,21 @@ jobs:
           # 70x44 so widths and heights off a multiple of four - where
           # the source pitch and the tile width part ways - are all
           # covered.
-          make clean all SANITIZER=address,undefined
+          make clean SANITIZER=address,undefined && make -j$(nproc) all SANITIZER=address,undefined
           test -x image_tile_gx_test
           ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
              timeout 120 ./image_tile_gx_test
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}

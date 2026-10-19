@@ -166,6 +166,8 @@ struct vita_overlay_data
 typedef struct vita_video
 {
    gxm_texture_t *texture;
+   /* Sampled by a quad drawn with no texture: solid colour */
+   gxm_texture_t *white_texture;
    SceGxmTextureFormat format;
    /* The size of the frame the core last handed over, packed. */
    unsigned dims;
@@ -188,6 +190,8 @@ typedef struct vita_video
 #ifdef HAVE_OVERLAY
    bool overlay_enable;
    bool overlay_full_screen;
+   /* overlay[].tex are the overlay pack's (load_textures) */
+   bool overlay_borrowed;
 #endif
    bool fullscreen;
    bool vsync;
@@ -336,6 +340,8 @@ static void *vertex_usse_alloc(unsigned int size, SceUID *uid,
       unsigned int *usse_offset);
 static void vertex_usse_free(SceUID uid);
 static void gxm_render_overlay(void *data);
+static uintptr_t gxm_load_texture(void *video_data, void *data,
+      bool threaded, enum texture_filter_type filter_type);
 static void gxm_set_projection(vita_video_t *vita,
       struct video_ortho *ortho, bool allow_rotate);
 
@@ -1562,7 +1568,8 @@ static void gfx_display_gxm_draw(gfx_display_ctx_draw_t *draw,
    if (!vita || !draw)
       return;
 
-   texture            = (gxm_texture_t*)draw->texture;
+   texture            = draw->texture
+      ? (gxm_texture_t*)draw->texture : vita->white_texture;
    vertex             = draw->coords->vertex;
    tex_coord          = draw->coords->tex_coord;
    color              = draw->coords->color;
@@ -1688,8 +1695,7 @@ static void *gxm_font_init(void *data,
       goto error;
 
    /* The atlas may grow; the texture follows it */
-   atlas->max_width  = 2048;
-   atlas->max_height = 2048;
+   atlas->max_dims = VIDEO_SCALE_PACK(2048, 2048);
 
    if (!(font->texture = gxm_font_make_texture(atlas)))
       goto error;
@@ -1779,10 +1785,10 @@ static void gxm_font_render_message(
          unsigned int pitch     = font->atlas->width; \
          /* Copy only the dirty rectangle tracked by the font \
           * renderers, one row at a time */ \
-         unsigned int x0        = font->atlas->dirty_x0; \
-         unsigned int y0        = font->atlas->dirty_y0; \
-         unsigned int x1        = font->atlas->dirty_x1; \
-         unsigned int y1        = font->atlas->dirty_y1; \
+         unsigned int x0        = VIDEO_SCALE_W(font->atlas->dirty_xy0); \
+         unsigned int y0        = VIDEO_SCALE_H(font->atlas->dirty_xy0); \
+         unsigned int x1        = VIDEO_SCALE_W(font->atlas->dirty_xy1); \
+         unsigned int y1        = VIDEO_SCALE_H(font->atlas->dirty_xy1); \
          if (x1 <= x0 || y1 <= y0 || x1 > pitch || y1 > font->atlas->height) \
          { \
             x0 = 0; \
@@ -1798,8 +1804,8 @@ static void gxm_font_render_message(
       gxm_draw_texture_tint_part_scale(font->texture, \
             x + ((glyph)->draw_offset_x + (pen_x)) * scale, \
             y + ((glyph)->draw_offset_y + (pen_y)) * scale, \
-            (glyph)->atlas_offset_x, (glyph)->atlas_offset_y, \
-            (glyph)->width, (glyph)->height, \
+            VIDEO_SCALE_W((glyph)->atlas_pos), VIDEO_SCALE_H((glyph)->atlas_pos), \
+            VIDEO_SCALE_W((glyph)->dims), VIDEO_SCALE_H((glyph)->dims), \
             scale, \
             scale, \
             color); \
@@ -1921,8 +1927,7 @@ static bool gxm_font_get_line_metrics(void* data,
  * VIDEO DRIVER
  */
 
-static void *gxm_gfx_init(const video_info_t *video,
-      input_driver_t **input, void **input_data)
+static void *gxm_gfx_init(const video_info_t *video)
 {
    unsigned int color;
    unsigned temp_width                    = PSP_FB_WIDTH;
@@ -1933,8 +1938,6 @@ static void *gxm_gfx_init(const video_info_t *video,
    if (!vita)
       return NULL;
 
-   *input             = NULL;
-   *input_data        = NULL;
 
    gxm_init_internal((1 * 1024 * 1024), SCE_GXM_MULTISAMPLE_4X,
    (sceKernelGetModelForCDialog() == SCE_KERNEL_MODEL_VITATV)
@@ -1958,6 +1961,16 @@ static void *gxm_gfx_init(const video_info_t *video,
    vita->menu.texture = NULL;
    vita->menu.active  = 0;
    vita->menu.dims    = 0;
+   {
+      static const uint32_t white = 0xffffffffu;
+      struct texture_image image;
+      memset(&image, 0, sizeof(image));
+      image.pixels        = (uint32_t*)&white;
+      image.width         = 1;
+      image.height        = 1;
+      vita->white_texture = (gxm_texture_t*)gxm_load_texture(vita, &image,
+            false, TEXTURE_FILTER_NEAREST);
+   }
 
    vita->vsync        = video->vsync;
    vita->rgb32        = video->rgb32;
@@ -1970,14 +1983,9 @@ static void *gxm_gfx_init(const video_info_t *video,
    video_driver_set_output_dims(VIDEO_SCALE_PACK(temp_width, temp_height));
    gxm_set_viewport_wrapper(vita, VIDEO_SCALE_PACK(temp_width, temp_height), false, true);
 
-   if (input && input_data)
-   {
-      settings_t *settings = config_get_ptr();
-      void *pspinput       = input_driver_init_wrap(&input_psp,
-            settings->arrays.input_joypad_driver);
-      *input               = pspinput ? &input_psp : NULL;
-      *input_data          = pspinput;
-   }
+   /* no input driver of this driver's own: the frontend starts the
+    * platform's */
+   input_driver_video_window(INPUT_WINDOW_PLATFORM, NULL);
 
    vita->keep_aspect        = true;
    vita->should_resize      = true;
@@ -1993,14 +2001,18 @@ static void gxm_free_overlay(vita_video_t *vita)
 {
    unsigned i;
 
-   if (gxm_initialized)
-      sceGxmFinish(gxm_context);
+   if (!vita->overlay_borrowed)
+   {
+      if (gxm_initialized)
+         sceGxmFinish(gxm_context);
 
-   for (i = 0; i < vita->overlays; i++)
-      gxm_free_texture(vita->overlay[i].tex);
+      for (i = 0; i < vita->overlays; i++)
+         gxm_free_texture(vita->overlay[i].tex);
+   }
    free(vita->overlay);
-   vita->overlay = NULL;
-   vita->overlays = 0;
+   vita->overlay          = NULL;
+   vita->overlays         = 0;
+   vita->overlay_borrowed = false;
 }
 #endif
 
@@ -2368,6 +2380,11 @@ static void gxm_free(void *data)
       vita->texture = NULL;
    }
 
+   if (vita->white_texture)
+   {
+      gxm_free_texture(vita->white_texture);
+      vita->white_texture = NULL;
+   }
 }
 
 static void gxm_set_projection(vita_video_t *vita,
@@ -2569,6 +2586,31 @@ static uintptr_t gxm_load_texture(void *video_data, void *data,
                pitch * sizeof(uint32_t));
 
    return (uintptr_t)texture;
+}
+
+/* Written in place like the menu texture: no replacement to load,
+ * and no sceGxmFinish to unload the old one */
+static enum video_texture_update gxm_update_texture(void *video_data,
+      uintptr_t id, const struct texture_image *ti, bool threaded)
+{
+   unsigned int stride, j;
+   uint32_t       *tex32;
+   gxm_texture_t *texture = (gxm_texture_t*)id;
+
+   if (     !texture || !ti || !ti->pixels || ti->pix10 || ti->fp16
+         || sceGxmTextureGetFormat(&texture->gxm_tex)
+            != SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ARGB
+         || sceGxmTextureGetWidth(&texture->gxm_tex)  != ti->width
+         || sceGxmTextureGetHeight(&texture->gxm_tex) != ti->height)
+      return VIDEO_TEXTURE_UPDATE_REFUSED;
+
+   stride = gxm_texture_get_stride(texture) / 4;
+   tex32  = sceGxmTextureGetData(&texture->gxm_tex);
+   for (j = 0; j < ti->height; j++)
+      memcpy_neon(&tex32[j * stride], &ti->pixels[j * ti->width],
+            ti->width * sizeof(uint32_t));
+
+   return VIDEO_TEXTURE_UPDATE_DONE;
 }
 
 static void gxm_unload_texture(void *data,
@@ -2781,7 +2823,20 @@ static const video_poke_interface_t vita_poke_interface = {
    NULL, /* set_hdr_scanlines */
    NULL, /* set_hdr_subpixel_layout */
    gxm_supports_texture_format,
-   gxm_load_texture_compressed
+   gxm_load_texture_compressed,
+   NULL, /* present_last */
+   NULL, /* get_last_present_time */
+   NULL, /* hw_ring_install */
+   NULL, /* hw_ring_fence_new */
+   NULL, /* hw_ring_fence_free */
+   NULL, /* hw_ring_fence_signal */
+   NULL, /* hw_ring_fence_wait */
+   NULL, /* hw_ring_capture */
+   NULL, /* hw_ring_present_slot */
+   NULL, /* hw_ring_context_new */
+   NULL, /* hw_ring_context_free */
+   NULL, /* hw_ring_framebuffer */
+   gxm_update_texture
 };
 
 static void gxm_get_poke_interface(void *data,
@@ -2886,6 +2941,46 @@ static void gxm_overlay_vertex_geom(void *data, unsigned image,
    }
 }
 
+/* A page of the pack's textures: gxm_load_texture's, uploaded once
+ * for every page; no texture of the page's own, so nothing to wait
+ * for on a switch */
+static bool gxm_overlay_load_textures(void *data,
+      const uintptr_t *textures, unsigned num_textures)
+{
+   unsigned i;
+   vita_video_t *vita = (vita_video_t*)data;
+
+   if (!vita)
+      return false;
+
+   gxm_free_overlay(vita);
+   if (!num_textures)
+      return true;
+   if (!(vita->overlay = (struct vita_overlay_data*)calloc(num_textures,
+         sizeof(*vita->overlay))))
+      return false;
+   vita->overlays         = num_textures;
+   vita->overlay_borrowed = true;
+
+   for (i = 0; i < num_textures; i++)
+   {
+      struct vita_overlay_data *o = &vita->overlay[i];
+      gxm_texture_t *tex          = (gxm_texture_t*)textures[i];
+
+      if (!tex)
+         continue;
+      o->tex       = tex;
+      o->dims      = VIDEO_SCALE_PACK(
+            sceGxmTextureGetWidth(&tex->gxm_tex),
+            sceGxmTextureGetHeight(&tex->gxm_tex));
+      gxm_overlay_tex_geom(vita, i, 0, 0, 1, 1); /* Default. Stretch to whole screen. */
+      gxm_overlay_vertex_geom(vita, i, 0, 0, 1, 1);
+      o->alpha_mod = 1.0f;
+   }
+
+   return true;
+}
+
 static void gxm_overlay_enable(void *data, bool state)
 {
    vita_video_t *vita   = (vita_video_t*)data;
@@ -2914,6 +3009,9 @@ static void gxm_render_overlay(void *data)
    vita_video_t *vita = (vita_video_t*)data;
 
    for (i = 0; i < vita->overlays; i++)
+   {
+      if (!vita->overlay[i].tex)
+         continue;
       gxm_draw_texture_tint_part_scale(vita->overlay[i].tex,
             vita->overlay[i].x,
             vita->overlay[i].y,
@@ -2924,12 +3022,13 @@ static void gxm_render_overlay(void *data)
             vita->overlay[i].w,
             vita->overlay[i].h,
             RGBA8(0xFF,0xFF,0xFF,(uint8_t)VIDEO_ALPHA_BYTE(vita->overlay[i].alpha_mod)));
+   }
 }
 
 static const video_overlay_interface_t gxm_overlay_interface = {
    gxm_overlay_enable,
    gxm_overlay_load,
-   NULL, /* load_textures */
+   gxm_overlay_load_textures,
    gxm_overlay_tex_geom,
    gxm_overlay_vertex_geom,
    gxm_overlay_full_screen,

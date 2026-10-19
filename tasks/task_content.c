@@ -78,7 +78,12 @@
 /* gfx/common/wayland_common.c */
 void gfx_ctx_wl_release_kept(void);
 #endif
-#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && !defined(WINAPI_FAMILY)
+/* Desktop Windows: __WINRT__ is what says a build is not
+ * (retro_environment.h). WINAPI_FAMILY says nothing - <windows.h>
+ * defines it in every build - and asking that it not be defined
+ * compiled this out on the desktop too. */
+#include <retro_environment.h>
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
 /* gfx/common/win32_common.c */
 void win32_window_release_kept(void);
 #endif
@@ -2243,6 +2248,18 @@ static void task_push_to_history_list(content_state_t *p_content,
       bool launched_from_menu, bool launched_from_cli,
       bool launched_from_companion_ui);
 
+void task_content_load_notify_finish(const char *error)
+{
+   const char *path = path_get(RARCH_PATH_CONTENT);
+   task_notify_fire(&content_state_get_ptr()->load_notify,
+         (path && *path) ? (void*)path : NULL, error);
+}
+
+bool task_content_load_pending(void)
+{
+   return content_load_job.stage != CONTENT_LOAD_STAGE_NONE;
+}
+
 /* The entry point's after-load work, and the job's end. */
 static void content_load_finish(struct content_load_job *job,
       content_state_t *p_content)
@@ -2304,6 +2321,8 @@ static void content_load_finish(struct content_load_job *job,
 #endif
    content_load_job_result = ok;
    content_load_job_free(job);
+   task_content_load_notify_finish(ok ? NULL
+         : msg_hash_to_str(MSG_FAILED_TO_LOAD_CONTENT));
 }
 
 /* Runs the job's current stage and moves it on. */
@@ -2359,7 +2378,7 @@ static void content_load_step(struct content_load_job *job,
              * dashboard rather than a window nothing draws into. */
             gfx_ctx_wl_release_kept();
 #endif
-#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && !defined(WINAPI_FAMILY)
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
             /* nor for a Windows one */
             win32_window_release_kept();
 #endif
@@ -3077,6 +3096,8 @@ bool task_push_load_new_core(
       retro_task_callback_t cb,
       void *user_data)
 {
+   bool ret;
+
    /* Set core path */
    path_set(RARCH_PATH_CORE, core_path);
 
@@ -3085,7 +3106,7 @@ bool task_push_load_new_core(
       path_set(RARCH_PATH_CORE_LAST, core_path);
 
    /* Load core */
-   command_event(CMD_EVENT_LOAD_CORE, NULL);
+   ret = command_event(CMD_EVENT_LOAD_CORE, NULL);
 
 #ifndef HAVE_DYNAMIC
    /* Fork core? */
@@ -3097,7 +3118,7 @@ bool task_push_load_new_core(
     * load the actual content. Can differ per mode. */
    runloop_set_current_core_type(type, true);
 
-   return true;
+   return ret;
 }
 
 #ifdef HAVE_MENU

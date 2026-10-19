@@ -38,6 +38,7 @@
 #include "../audio/audio_upmix.h"
 #include "drivers/record_ffmpeg.h"
 #include "drivers/record_wav.h"
+#include "drivers/record_nvenc.h"
 #include "drivers/record_avfoundation.h"
 
 static recording_state_t recording_state = {0};
@@ -59,6 +60,9 @@ const record_driver_t *record_drivers[] = {
    &record_ffmpeg,
 #endif
    &record_wav,
+#ifdef HAVE_RECORD_NVENC
+   &record_nvenc,
+#endif
    &record_null,
    NULL,
 };
@@ -137,14 +141,22 @@ static bool record_driver_init(
 bool recording_deinit(void)
 {
    recording_state_t *recording_st = &recording_state;
+   bool success                   = true;
+#ifdef HAVE_RECORD_NVENC
+   bool native                    = recording_st->driver == &record_nvenc;
+#endif
 #ifdef HAVE_FFMPEG
    bool history_list_enable        = config_get_ptr()->bools.history_list_enable;
 #endif
 
-#ifdef HAVE_THREADS
-   /* The GPU recorder reads from the frames the video thread presents;
-    * let any in-flight one finish before its readback target goes. */
-   video_thread_wait_idle();
+#ifdef HAVE_RECORD_NVENC
+   if (record_nvenc_cancel_start())
+   {
+      recording_st->driver = NULL;
+      recording_st->data = NULL;
+      recording_st->path[0] = '\0';
+      return true;
+   }
 #endif
 
    if (     !recording_st->data
@@ -152,7 +164,7 @@ bool recording_deinit(void)
       return false;
 
    if (recording_st->driver->finalize)
-      recording_st->driver->finalize(recording_st->data);
+      success = recording_st->driver->finalize(recording_st->data);
 
    if (recording_st->driver->free)
       recording_st->driver->free(recording_st->data);
@@ -160,11 +172,19 @@ bool recording_deinit(void)
    recording_st->data              = NULL;
    recording_st->driver            = NULL;
 
+   /* Under the wrapper the readback buffers are retired, freed once no
+    * frame in flight names them: nothing to wait for */
    video_driver_gpu_record_deinit();
+
+   if (!success)
+      RARCH_ERR("[Recording] Failed to finalize recording.\n");
 
    /* Push recording to video history playlist */
 #ifdef HAVE_FFMPEG
-   if (     history_list_enable
+   if (     success && history_list_enable
+#ifdef HAVE_RECORD_NVENC
+         && !native
+#endif
          && *recording_st->path)
    {
       struct playlist_entry entry = {0};
@@ -181,7 +201,7 @@ bool recording_deinit(void)
    /* Forget cached path to create a new one next */
    recording_st->path[0] = '\0';
 
-   return true;
+   return success;
 }
 
 void streaming_set_state(bool state)
@@ -207,16 +227,24 @@ bool recording_init(void)
       video_driver_pix_fmt              = video_st->pix_fmt;
    recording_state_t *recording_st      = &recording_state;
    bool recording_enable                = recording_st->enable;
-
-#ifdef HAVE_THREADS
-   /* No frame may be mid-present while the recorder binds to the
-    * driver's readback path. No-op without the wrapper. */
-   video_thread_wait_idle();
-#endif
+   bool gpu_native = string_is_equal(settings->arrays.record_driver, "nvenc");
 
    if (!recording_enable)
       return false;
 
+#ifndef HAVE_RECORD_NVENC
+   if (gpu_native)
+   {
+      RARCH_ERR("[Recording] Native NVENC recording is unavailable in this build.\n");
+      return false;
+   }
+#endif
+   if (gpu_native) video_gpu_record = true;
+   if (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_SCRGB_RGBA16F)
+   {
+      RARCH_ERR("[Recording] Native FP16 core recording is not supported.\n");
+      return false;
+   }
    output[0] = '\0';
 
    if (current_core_type == CORE_TYPE_DUMMY)
@@ -226,7 +254,8 @@ bool recording_init(void)
       return false;
    }
 
-   if (!video_gpu_record && video_driver_is_hw_context())
+   if (!video_gpu_record && (video_driver_is_hw_context()
+            || video_driver_cached_frame_is_hw_render()))
    {
       RARCH_WARN("[Recording] %s\n",
             msg_hash_to_str(MSG_HW_RENDERED_MUST_USE_POSTSHADED_RECORDING));
@@ -268,6 +297,8 @@ bool recording_init(void)
 
          {
             const char *ext = "mkv";
+            if (gpu_native) ext = "mp4";
+            else
 #ifdef HAVE_AVF
             if (string_is_equal(settings->arrays.record_driver,
                      "avfoundation"))
@@ -300,6 +331,9 @@ bool recording_init(void)
    params.video_stream_scale_factor = settings->uints.video_stream_scale_factor;
    params.video_record_threads      = settings->uints.video_record_threads;
    params.streaming_mode            = settings->uints.streaming_mode;
+   params.allow_frame_drop          = settings->bools.video_record_allow_frame_drop;
+   params.video_fifo_frames         = settings->uints.video_record_fifo_frames;
+   params.hw_encoder                = settings->bools.video_record_hw_encoder;
 
    params.out_dims                  = VIDEO_SCALE_PACK(
          av_info->geometry.base_width, av_info->geometry.base_height);
@@ -309,12 +343,14 @@ bool recording_init(void)
     * multi-channel batch entry is recorded in it, where the container
     * has a default layout for the count - quad, 5.1 with the pair at
     * the back, 7.1 - which are the layouts in the order the recorder
-    * takes them. Anything else, stereo. */
+    * takes them. Anything else, stereo. Native GPU recording keeps the
+    * exact declared mask for its encoder to admit or refuse. */
    params.channels                  = 2;
    recording_st->layout              = AUDIO_LAYOUT_STEREO;
    {
       uint32_t core_layout = audio_state_get_ptr()->core_layout;
-      if (     core_layout == AUDIO_LAYOUT_QUAD
+      if (     (gpu_native && core_layout)
+            || core_layout == AUDIO_LAYOUT_QUAD
             || core_layout == AUDIO_LAYOUT_5POINT1
             || core_layout == AUDIO_LAYOUT_7POINT1)
       {
@@ -354,10 +390,25 @@ bool recording_init(void)
       }
    }
 
-   if (  video_gpu_record
-      && video_st->current_video->read_viewport)
+   if (gpu_native)
    {
-      unsigned gpu_size;
+      struct video_viewport vp;
+      memset(&vp, 0, sizeof(vp));
+      if (!video_driver_get_viewport_info(&vp)) return false;
+      if (!VIDEO_SCALE_W(vp.dims) || !VIDEO_SCALE_H(vp.dims))
+      {
+         recording_st->driver = &record_nvenc;
+         return record_nvenc_defer_start();
+      }
+      params.out_dims = params.fb_dims = vp.dims;
+      params.pix_fmt = FFEMU_PIX_ARGB8888;
+      params.aspect_ratio = (float)VIDEO_SCALE_W(vp.dims) / VIDEO_SCALE_H(vp.dims);
+      recording_st->gpu_dims = vp.dims;
+      recording_st->gpu_bgrx = false;
+   }
+   else if (video_gpu_record && video_st->current_video->read_viewport)
+   {
+      size_t gpu_size;
       struct video_viewport vp;
 
       vp.pos                      = VIDEO_POS_PACK(0, 0);
@@ -374,9 +425,9 @@ bool recording_init(void)
       }
 
       params.out_dims                     = vp.dims;
-      params.fb_dims                      = VIDEO_SCALE_PACK(
-            next_pow2(VIDEO_SCALE_W(vp.dims)),
-            next_pow2(VIDEO_SCALE_H(vp.dims)));
+      /* Every frame is exactly the viewport (a resize ends the
+       * recording), so size the encoder's queue to it. */
+      params.fb_dims                      = vp.dims;
 
       if (video_force_aspect &&
             (VIDEO_DRIVER_ASPECT_RATIO(video_st) > 0.0f))
@@ -384,27 +435,65 @@ bool recording_init(void)
       else
          params.aspect_ratio              = (float)VIDEO_SCALE_W(vp.dims) / VIDEO_SCALE_H(vp.dims);
 
-      params.pix_fmt                      = FFEMU_PIX_BGR24;
+      /* The driver's 32-bit readback skips a per-frame BGR24
+       * conversion; FFEMU_PIX_ARGB8888 is a native-endian word, so B,G,R,X
+       * bytes only on little-endian hosts. The threaded wrapper reads back
+       * on its own thread, in either format when the driver gives it a
+       * reader. */
+#ifdef MSB_FIRST
+      recording_st->gpu_bgrx              = false;
+#else
+      if (video_driver_thread_wrapper_active())
+      {
+#ifdef HAVE_THREADS
+         recording_st->gpu_bgrx           =
+               video_thread_record_has_reader(video_st->data);
+#else
+         recording_st->gpu_bgrx           = false;
+#endif
+      }
+      else
+         recording_st->gpu_bgrx           =
+               video_st->current_video->read_viewport_bgrx != NULL;
+#endif
+      params.pix_fmt                      = recording_st->gpu_bgrx
+         ? FFEMU_PIX_ARGB8888 : FFEMU_PIX_BGR24;
+
+      /* Said once, as the recording starts: this driver reads back the
+       * screen as shown, with the menu and messages in it. */
+      if (     settings->bools.video_record_game_only
+            && !video_driver_test_all_flags(GFX_CTX_FLAGS_RECORD_GAME_ONLY))
+      {
+         const char *_msg = msg_hash_to_str(
+               MSG_RECORDING_GAME_ONLY_UNSUPPORTED);
+         RARCH_WARN("[Recording] %s\n", _msg);
+         runloop_msg_queue_push(_msg, strlen(_msg), 1, 240, false, NULL,
+               MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_WARNING);
+      }
       recording_st->gpu_dims              = vp.dims;
 
-      RARCH_LOG("[Recording] %s %ux%u.\n", msg_hash_to_str(MSG_DETECTED_VIEWPORT_OF),
-            VIDEO_SCALE_W(vp.dims), VIDEO_SCALE_H(vp.dims));
+      RARCH_LOG("[Recording] %s %ux%u (%s readback).\n",
+            msg_hash_to_str(MSG_DETECTED_VIEWPORT_OF),
+            VIDEO_SCALE_W(vp.dims), VIDEO_SCALE_H(vp.dims),
+            recording_st->gpu_bgrx ? "BGRX" : "BGR24");
 
-      gpu_size = VIDEO_SCALE_AREA(vp.dims) * 3;
+      gpu_size = VIDEO_SCALE_AREA(vp.dims) * (recording_st->gpu_bgrx ? 4 : 3);
       if (!(video_st->record_gpu_buffer = (uint8_t*)malloc(gpu_size)))
          return false;
    }
    else
    {
+      recording_st->gpu_bgrx = false;
       if (recording_state.out_dims)
          params.out_dims   = recording_state.out_dims;
 
-      if (video_force_aspect &&
-            (VIDEO_DRIVER_ASPECT_RATIO(video_st) > 0.0f))
-         params.aspect_ratio = VIDEO_DRIVER_ASPECT_RATIO(video_st);
-      else
-         params.aspect_ratio = (float)VIDEO_SCALE_W(params.out_dims)
-               / VIDEO_SCALE_H(params.out_dims);
+      /* Raw core frames are unrotated; the GPU path reads back the
+       * already-rotated screen. Rotate them like the display does. */
+      params.rotation = retroarch_get_rotation() % 4;
+      record_raw_geometry(&params.out_dims, &params.aspect_ratio,
+            params.rotation,
+            video_force_aspect ? VIDEO_DRIVER_ASPECT_RATIO(video_st) : 0.0f,
+            recording_state.out_dims != 0);
 
 #ifdef HAVE_VIDEO_FILTER
       if (settings->bools.video_post_filter_record

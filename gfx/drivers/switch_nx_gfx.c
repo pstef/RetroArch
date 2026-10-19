@@ -106,8 +106,7 @@ static void *switch_font_init(void *data, const char *font_path,
    font->atlas = font->font_driver->get_atlas(font->font_data);
    /* The atlas may grow; glyphs are blitted from it in memory, so
     * there is no texture to make again */
-   font->atlas->max_width  = 2048;
-   font->atlas->max_height = 2048;
+   font->atlas->max_dims = VIDEO_SCALE_PACK(2048, 2048);
 
    return font;
 }
@@ -180,10 +179,10 @@ static void switch_font_render_message(
       int ty; \
       int off_x  = x + (glyph)->draw_offset_x + (pen_x); \
       int off_y  = y + (glyph)->draw_offset_y + (pen_y); \
-      int g_w    = (glyph)->width; \
-      int g_h    = (glyph)->height; \
-      int tex_x  = (glyph)->atlas_offset_x; \
-      int tex_y  = (glyph)->atlas_offset_y; \
+      int g_w    = VIDEO_SCALE_W((glyph)->dims); \
+      int g_h    = VIDEO_SCALE_H((glyph)->dims); \
+      int tex_x  = VIDEO_SCALE_W((glyph)->atlas_pos); \
+      int tex_y  = VIDEO_SCALE_H((glyph)->atlas_pos); \
       if (!line_ok) \
          break; \
       for (ty = tex_y; ty < tex_y + g_h; ty++) \
@@ -269,81 +268,6 @@ static bool switch_font_get_line_metrics(void* data, struct font_line_metrics **
  * VIDEO DRIVER
  */
 
-#if 0
-/* (C) libtransistor */
-static int pdep(uint32_t mask, uint32_t value)
-{
-   int shift;
-   uint32_t out = 0;
-   for (shift = 0; shift < 32; shift++)
-   {
-      uint32_t bit = 1u << shift;
-      if (mask & bit)
-      {
-         if (value & 1)
-            out |= bit;
-         value >>= 1;
-      }
-   }
-   return out;
-}
-
-static uint32_t swizzle_x(uint32_t v) { return pdep(~0x7B4u, v); }
-static uint32_t swizzle_y(uint32_t v) { return pdep(0x7B4, v); }
-
-static void gfx_slow_swizzling_blit(uint32_t *buffer, uint32_t *image, int w, int h, int tx, int ty, bool blend)
-{
-    uint32_t *dest = buffer;
-    uint32_t *src = image;
-    int x0 = tx;
-    int y0 = ty;
-    int x1 = x0 + w;
-    int y1 = y0 + h;
-    const uint32_t tile_height = 128;
-    const uint32_t padded_width = 128 * 10;
-
-    /* we're doing this in pixels - should just shift the swizzles instead */
-    uint32_t offs_x0 = swizzle_x(x0);
-    uint32_t offs_y = swizzle_y(y0);
-    uint32_t x_mask = swizzle_x(~0u);
-    uint32_t y_mask = swizzle_y(~0u);
-    uint32_t incr_y = swizzle_x(padded_width);
-
-    /* step offs_x0 to the right row of tiles */
-    offs_x0 += incr_y * (y0 / tile_height);
-
-    uint32_t x, y;
-    for (y = y0; y < y1; y++)
-    {
-        uint32_t *dest_line = dest + offs_y;
-        uint32_t offs_x = offs_x0;
-
-        for (x = x0; x < x1; x++)
-        {
-            uint32_t pixel = *src++;
-            if (blend) /* supercheap masking */
-            {
-                uint32_t dst = dest_line[offs_x];
-                uint8_t src_a = ((pixel & 0xFF000000) >> 24);
-
-                if (src_a > 0)
-                    pixel &= 0x00FFFFFF;
-                else
-                    pixel = dst;
-            }
-
-            dest_line[offs_x] = pixel;
-
-            offs_x = (offs_x - x_mask) & x_mask;
-        }
-
-        offs_y = (offs_y - y_mask) & y_mask;
-        if (!offs_y)
-            offs_x0 += incr_y; /* wrap into next tile row */
-    }
-}
-#endif
-
 static void gfx_cpy_dsp_buf(uint32_t *buffer, uint32_t *image, int w, int h, uint32_t stride, bool blend)
 {
     uint32_t *dest = buffer;
@@ -389,10 +313,8 @@ static void clear_screen(switch_video_t *sw)
     framebufferEnd(&sw->fb);
 }
 
-static void *switch_init(const video_info_t *video,
-      input_driver_t **input, void **input_data)
+static void *switch_init(const video_info_t *video)
 {
-    void  *switchinput = NULL;
     switch_video_t *sw = (switch_video_t *)calloc(1, sizeof(*sw));
     if (!sw)
         return NULL;
@@ -427,14 +349,9 @@ static void *switch_init(const video_info_t *video,
     sw->menu_texture.enable = false;
 
     /* Autoselect driver */
-    if (input && input_data)
-    {
-        settings_t *settings = config_get_ptr();
-        switchinput          = input_driver_init_wrap(&input_switch,
-              settings->arrays.input_joypad_driver);
-        *input               = switchinput ? &input_switch : NULL;
-        *input_data          = switchinput;
-    }
+    /* no input driver of this driver's own: the frontend starts the
+     * platform's */
+    input_driver_video_window(INPUT_WINDOW_PLATFORM, NULL);
 
 
     clear_screen(sw);

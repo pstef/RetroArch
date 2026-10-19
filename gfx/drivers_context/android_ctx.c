@@ -215,13 +215,11 @@ static bool android_gfx_ctx_set_video_mode(void *data,
 }
 
 static void android_gfx_ctx_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
-   void *androidinput   = input_driver_init_wrap(&input_android, joypad_name);
-
-   *input               = androidinput ? &input_android : NULL;
-   *input_data          = androidinput;
+   /* no input driver of this context's own: the frontend starts the
+    * platform's */
+   input_driver_video_window(INPUT_WINDOW_PLATFORM, NULL);
 }
 
 static enum gfx_ctx_api android_gfx_ctx_get_api(void *data)

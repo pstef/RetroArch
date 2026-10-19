@@ -480,6 +480,8 @@ static bool dump_to_file_desperate(const void *data,
       time_t time_;
       struct tm tm_;
 
+      /* rtime_localtime leaves tm_ unwritten when localtime() fails */
+      memset(&tm_, 0, sizeof(tm_));
       time(&time_);
       rtime_localtime(&time_, &tm_);
       _len += strlcpy_lit(path  + _len, "/RetroArch-recovery-", sizeof(path) - _len);
@@ -564,17 +566,21 @@ static bool content_save_ram_file(unsigned slot, bool compress)
          msg_hash_to_str(MSG_TO),
          ram.path);
 
+   /* Write via a temporary file, so a crash or power loss mid-save
+    * leaves the previous save intact instead of a truncated one. */
 #if defined(HAVE_COMPRESSION)
    if (compress)
    {
-      if (!rzipstream_write_file(
-            ram.path, mem_info.data, mem_info.size))
+      char tmp_path[PATH_MAX_LENGTH];
+      if (     !filestream_atomic_temp_name(tmp_path, sizeof(tmp_path), ram.path)
+            || !content_finish_tmp(ram.path, rzipstream_write_file(
+                  tmp_path, mem_info.data, mem_info.size)))
          goto fail;
    }
    else
 #endif
    {
-      if (!filestream_write_file(
+      if (!filestream_write_file_atomic(
             ram.path, mem_info.data, mem_info.size))
          goto fail;
    }
@@ -603,14 +609,16 @@ bool event_save_files(bool is_sram_used, bool compress_files,
       const char *path_cheat_database)
 {
    unsigned i;
+   bool ret = true;
 #ifdef HAVE_CHEATS
    cheat_manager_save_game_specific_cheats(path_cheat_database);
 #endif
    if (!task_save_files || !is_sram_used)
       return false;
    for (i = 0; i < task_save_files->size; i++)
-      content_save_ram_file(i, compress_files);
-   return true;
+      if (!content_save_ram_file(i, compress_files))
+         ret = false;
+   return ret;
 }
 
 bool event_load_save_files(bool is_sram_load_disabled)

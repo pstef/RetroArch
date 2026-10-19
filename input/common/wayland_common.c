@@ -247,14 +247,14 @@ static void wl_pointer_handle_enter(void *data,
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
 
    wl->input.mouse.surface    = surface;
-   wl->input.mouse.last_x     = wl->fractional_scale ?
-         (int) FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sx), wl->fractional_scale_num) :
-         wl_fixed_to_int(sx * (wl_fixed_t)wl->buffer_scale);
-   wl->input.mouse.last_y     = wl->fractional_scale ?
-         (int) FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sy), wl->fractional_scale_num) :
-         wl_fixed_to_int(sy * (wl_fixed_t)wl->buffer_scale);
-   wl->input.mouse.x          = wl->input.mouse.last_x;
-   wl->input.mouse.y          = wl->input.mouse.last_y;
+   wl->input.mouse.last_pos   = VIDEO_POS_PACK(
+         wl->fractional_scale
+         ? (int)FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sx), wl->fractional_scale_num)
+         : wl_fixed_to_int(sx * (wl_fixed_t)wl->buffer_scale),
+         wl->fractional_scale
+         ? (int)FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sy), wl->fractional_scale_num)
+         : wl_fixed_to_int(sy * (wl_fixed_t)wl->buffer_scale));
+   wl->input.mouse.pos        = wl->input.mouse.last_pos;
    wl->input.mouse.focus      = true;
    wl->cursor.serial          = serial;
 
@@ -286,12 +286,13 @@ static void wl_pointer_handle_motion(void *data,
 {
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
    wl_input_event_seen(wl);
-   wl->input.mouse.x          = wl->fractional_scale ?
-         (int) FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sx), wl->fractional_scale_num) :
-         wl_fixed_to_int((wl_fixed_t)wl->buffer_scale * sx);
-   wl->input.mouse.y          = wl->fractional_scale ?
-         (int) FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sy), wl->fractional_scale_num) :
-         wl_fixed_to_int((wl_fixed_t)wl->buffer_scale * sy);
+   wl->input.mouse.pos = VIDEO_POS_PACK(
+         wl->fractional_scale
+         ? (int)FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sx), wl->fractional_scale_num)
+         : wl_fixed_to_int((wl_fixed_t)wl->buffer_scale * sx),
+         wl->fractional_scale
+         ? (int)FRACTIONAL_SCALE_MULT(wl_fixed_to_int(sy), wl->fractional_scale_num)
+         : wl_fixed_to_int((wl_fixed_t)wl->buffer_scale * sy));
 }
 
 static void wl_pointer_handle_button(void *data,
@@ -620,13 +621,15 @@ static void handle_relative_motion(void *data,
    gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
 
    wl_input_event_seen(wl);
-   wl->input.mouse.delta_x = wl_fixed_to_int(dx_unaccel);
-   wl->input.mouse.delta_y = wl_fixed_to_int(dy_unaccel);
+   /* added up: several of these come between two polls, and the poll
+    * takes the total */
+   VIDEO_POS_ADD(wl->input.mouse.delta,
+         wl_fixed_to_int(dx_unaccel), wl_fixed_to_int(dy_unaccel));
 
    if (wl->locked_pointer)
    {
-      wl->input.mouse.x += wl->input.mouse.delta_x;
-      wl->input.mouse.y += wl->input.mouse.delta_y;
+      VIDEO_POS_ADD(wl->input.mouse.pos,
+            wl_fixed_to_int(dx_unaccel), wl_fixed_to_int(dy_unaccel));
    }
 }
 
@@ -1545,7 +1548,7 @@ void flush_wayland_fd(void *data)
  * got to it first. */
 void wayland_input_dispatch(input_ctx_wayland_data_t *wl)
 {
-#ifdef WAYLAND_HAVE_INPUT_QUEUE
+#ifdef WAYLAND_HAVE_QUEUE_DISPATCH
    struct pollfd fd = {0};
 #endif
 
@@ -1555,7 +1558,7 @@ void wayland_input_dispatch(input_ctx_wayland_data_t *wl)
       return;
    }
 
-#ifdef WAYLAND_HAVE_INPUT_QUEUE
+#ifdef WAYLAND_HAVE_QUEUE_DISPATCH
    fd.fd            = wl->fd;
    fd.events        = POLLIN | POLLERR | POLLHUP;
 

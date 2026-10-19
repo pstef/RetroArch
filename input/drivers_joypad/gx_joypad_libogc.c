@@ -32,9 +32,7 @@
 
 #ifdef GEKKO
 #define WPADInit WPAD_Init
-#define WPADDisconnect WPAD_Disconnect
 #define WPADProbe WPAD_Probe
-#define WPADSetDataFormat WPAD_SetDataFormat
 #endif
 
 #define WPAD_EXP_SICKSAXIS     252
@@ -119,14 +117,11 @@ enum
    GX_NUNCHUK_LEFT         = 43,
    GX_NUNCHUK_RIGHT        = 44,
 #endif
-   GX_QUIT_KEY             = 62,
+   GX_QUIT_KEY             = 62
 };
 
 #define GC_JOYSTICK_THRESHOLD (48 * 256)
 #define WII_JOYSTICK_THRESHOLD (40 * 256)
-
-/* TODO/FIXME - global referenced outside */
-extern uint64_t lifecycle_state;
 
 /* TODO/FIXME - static globals */
 static uint64_t pad_state[DEFAULT_MAX_PADS];
@@ -142,7 +137,7 @@ static void power_callback(void) { g_quit = true; }
 static void reset_cb(u32 a, void *b) { (void)a; (void)b; g_menu = true; }
 
 #ifdef HW_RVL
-static inline void gx_mouse_info(uint32_t joybutton, unsigned port)
+static INLINE void gx_mouse_info(uint32_t joybutton, unsigned port)
 {
    uint8_t i;
    ir_t ir;
@@ -179,6 +174,8 @@ void gx_joypad_read_mouse(unsigned port, int *irx, int *iry, uint32_t *button)
 
 static const char *gx_joypad_name(unsigned pad)
 {
+   if (pad >= DEFAULT_MAX_PADS)
+      return NULL;
    switch (pad_type[pad])
    {
 #ifdef HW_RVL
@@ -213,8 +210,7 @@ static void handle_hotplug(unsigned port, uint32_t ptype)
 
 static void check_port0_active(uint8_t pad_count)
 {
-   settings_t *settings = config_get_ptr();
-   int idx = settings->uints.input_joypad_index[0];
+   int idx = (int)input_config_get_joypad_index(0);
 
    if (pad_count < 2 && idx != 0)
    {
@@ -223,7 +219,7 @@ static void check_port0_active(uint8_t pad_count)
 #else
       pad_type[0] = WPAD_EXP_GAMECUBE;
 #endif
-      settings->uints.input_joypad_index[0] = 0;
+      input_config_set_joypad_index(0, 0);
 
       input_autoconfigure_connect(
             gx_joypad_name(0),
@@ -312,7 +308,8 @@ static int16_t gx_joypad_axis(unsigned port, uint32_t joyaxis)
 
 static int16_t gx_joypad_state(
       rarch_joypad_info_t *joypad_info,
-      const struct retro_keybind *binds,
+      const uint16_t *joykeys,
+      const uint32_t *joyaxes,
       unsigned port)
 {
    unsigned i;
@@ -324,11 +321,8 @@ static int16_t gx_joypad_state(
 
    for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
    {
-      /* Auto-binds are per joypad, not per user. */
-      const uint64_t joykey  = (binds[i].joykey != NO_BTN)
-         ? binds[i].joykey  : joypad_info->auto_binds[i].joykey;
-      const uint32_t joyaxis = (binds[i].joyaxis != AXIS_NONE)
-         ? binds[i].joyaxis : joypad_info->auto_binds[i].joyaxis;
+      const uint64_t joykey  = joykeys[i];
+      const uint32_t joyaxis = joyaxes[i];
       if (
             (uint16_t)joykey != NO_BTN &&
             (pad_state[port_idx] & (UINT64_C(1) << joykey))
@@ -440,7 +434,7 @@ static int16_t WPAD_StickY(WPADData *data, u8 right)
 
 static bool gx_joypad_query_pad(unsigned pad)
 {
-   return pad < MAX_USERS && pad_type[pad] != WPAD_EXP_NOCONTROLLER;
+   return pad < DEFAULT_MAX_PADS && pad_type[pad] != WPAD_EXP_NOCONTROLLER;
 }
 
 static void gx_joypad_poll(void)
@@ -462,7 +456,7 @@ static void gx_joypad_poll(void)
 #ifdef HW_RVL
    if (g_quit)
    {
-      retroarch_ctl(RARCH_CTL_SET_SHUTDOWN, NULL);
+      input_driver_platform_request(INPUT_PLATFORM_SHUTDOWN);
       g_quit = false;
       return;
    }
@@ -474,6 +468,12 @@ static void gx_joypad_poll(void)
    {
       uint32_t down = 0, ptype = WPAD_EXP_NOCONTROLLER;
       uint64_t *state_cur = &pad_state[port];
+
+      /* Centred unless the pad read below has the stick. */
+      analog_state[port][RETRO_DEVICE_INDEX_ANALOG_LEFT] [RETRO_DEVICE_ID_ANALOG_X] = 0;
+      analog_state[port][RETRO_DEVICE_INDEX_ANALOG_LEFT] [RETRO_DEVICE_ID_ANALOG_Y] = 0;
+      analog_state[port][RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_X] = 0;
+      analog_state[port][RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_Y] = 0;
 
       if (gcpad & (1 << port))
       {
@@ -604,7 +604,7 @@ static void gx_joypad_poll(void)
 
    state_p1 = pad_state[0];
 
-   BIT64_CLEAR(lifecycle_state, RARCH_MENU_TOGGLE);
+   input_driver_set_platform_menu_button(false);
    if (g_menu)
    {
       state_p1 |= (UINT64_C(1) << GX_GC_HOME);
@@ -617,7 +617,7 @@ static void gx_joypad_poll(void)
 #endif
 
    if (check_menu_toggle & state_p1)
-      BIT64_SET(lifecycle_state, RARCH_MENU_TOGGLE);
+      input_driver_set_platform_menu_button(true);
 }
 
 static void *gx_joypad_init(void *data)
@@ -644,22 +644,7 @@ static void *gx_joypad_init(void *data)
    return (void*)-1;
 }
 
-static void gx_joypad_destroy(void)
-{
-#ifdef HW_RVL
-#if 0
-   int i;
-   for (i = 0; i < DEFAULT_MAX_PADS; i++)
-   {
-      /* Commenting this out fixes the Wii
-       * remote not reconnecting after
-       * core load, exit, etc. */
-      WPAD_Flush(i);
-      WPADDisconnect(i);
-   }
-#endif
-#endif
-}
+static void gx_joypad_destroy(void) { }
 
 input_device_driver_t gx_joypad = {
    gx_joypad_init,

@@ -23,7 +23,15 @@
  *  - fallback: a core that cannot be loaded ends on the dummy core
  *    with the drivers rebuilt and the menu up;
  *  - not a core: a library that opens but lacks retro_init does the
- *    same, and the failure is said.
+ *    same, and the failure is said;
+ *  - user dirs held: the frontend boots with the user directories
+ *    held - nothing is made or read under the playlist directory,
+ *    the playlists tab lists nothing - and the release makes the
+ *    builtin folder, loads favorites and history, and lists the tab;
+ *  - quit waits for a save: a quit from the frame loop while a state
+ *    is being written returns to the loop at once, which presents
+ *    frames - the core not run - until the state is written, and only
+ *    then finishes the quit and ends.  Runs last: the session ends.
  *
  * Requires a completed non-Qt build:
  *
@@ -32,6 +40,7 @@
  */
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,6 +75,7 @@
 #include "../../../playlist.h"
 #include "../../../paths.h"
 #include "../../../content.h"
+#include "../../../defaults.h"
 #include "../../../input/input_driver.h"
 #include "../../../runahead.h"
 #include "../../../state_manager.h"
@@ -240,6 +250,66 @@ static void open_menu(void)
 /* Lane: staged                                                        */
 /* ------------------------------------------------------------------ */
 
+#ifdef HAVE_MENU
+static unsigned playlists_tab_size(const char *dir_playlist)
+{
+   menu_displaylist_info_t info;
+   file_list_t list = {0};
+   unsigned size;
+   menu_displaylist_info_init(&info);
+   info.list         = &list;
+   info.path         = strdup(dir_playlist);
+   info.label        = strdup(MENU_ENUM_LABEL_PLAYLISTS_TAB_STR);
+   info.exts         = strdup("lpl");
+   info.type_default = FILE_TYPE_PLAIN;
+   info.enum_idx     = MENU_ENUM_LABEL_PLAYLISTS_TAB;
+   menu_displaylist_ctl(DISPLAYLIST_DATABASE_PLAYLISTS_HORIZONTAL,
+         &info, config_get_ptr());
+   size = (unsigned)list.size;
+   menu_displaylist_info_free(&info);
+   file_list_deinitialize(&list);
+   return size;
+}
+#endif
+
+/* Runs first: main() boots the frontend held. */
+static void lane_user_dirs_held(const char *dir)
+{
+   char dir_playlist[600];
+   char builtin[640];
+   snprintf(dir_playlist, sizeof(dir_playlist), "%s/playlists", dir);
+   snprintf(builtin, sizeof(builtin), "%s/builtin", dir_playlist);
+
+   CHECK(retroarch_get_flags() & RARCH_FLAGS_USER_DIRS_HELD,
+         "held: the boot dropped the hold");
+   CHECK(!path_is_directory(builtin),
+         "held: the builtin playlist folder was made");
+#ifdef HAVE_MENU
+   CHECK(!g_defaults.content_favorites, "held: favorites were loaded");
+   CHECK(!g_defaults.content_history, "held: history was loaded");
+   retroarch_favorites_init();
+   command_event(CMD_EVENT_HISTORY_INIT, NULL);
+   CHECK(!g_defaults.content_favorites && !g_defaults.content_history,
+         "held: a playlist init read the playlist directory");
+   CHECK(playlists_tab_size(dir_playlist) == 0,
+         "held: the playlists tab listed the playlist directory");
+#endif
+
+   retroarch_user_dirs_release();
+
+   CHECK(!(retroarch_get_flags() & RARCH_FLAGS_USER_DIRS_HELD),
+         "release: the hold is still set");
+   CHECK(path_is_directory(builtin),
+         "release: the builtin playlist folder was not made");
+#ifdef HAVE_MENU
+   CHECK(g_defaults.content_favorites, "release: favorites not loaded");
+   CHECK(g_defaults.content_history, "release: history not loaded");
+   CHECK(playlists_tab_size(dir_playlist) == 1,
+         "release: the playlists tab does not list the playlist");
+#endif
+   fprintf(stderr, "user dirs held: ok\n");
+}
+
 static void lane_staged(void)
 {
    struct load_frame log[LOAD_FRAMES];
@@ -359,58 +429,116 @@ static void harness_sibling(char *s, size_t len, const char *name)
 
 /* What LOAD_CORE asks of a core before loading it is kept, keyed by
  * its file's size and modification time: a core already asked is not
- * opened again at push - the core running here would see its
- * retro_set_environment called if it were - a changed file is, and the
- * record outlives the session. */
+ * opened again, a changed file is, and the record outlives the
+ * session. The running core is never asked: what it declared comes
+ * from the running state, and nothing is kept for it. */
+static unsigned sibling_env_sets(dylib_t lib)
+{
+   unsigned (*fn)(void) = lib
+      ? (unsigned (*)(void))dylib_proc(lib, "harness_core_env_sets") : NULL;
+   return fn ? fn() : 0;
+}
+
+static bool cache_names(const char *cache_file, const char *needle)
+{
+   void   *buf = NULL;
+   int64_t len = 0;
+   bool    hit;
+   if (!filestream_read_file(cache_file, &buf, &len) || !buf)
+      return false;
+   hit = strstr((const char*)buf, needle) != NULL;
+   free(buf);
+   return hit;
+}
+
 static void lane_probe_cached(void)
 {
+   struct retro_system_info info;
    char cache_file[600];
+   char sibling[600];
+   char stamp[600];
    int64_t mtime = 0;
+   bool no_game  = false;
    unsigned before;
    unsigned had = failures;
+   dylib_t lib;
 
    snprintf(cache_file, sizeof(cache_file), "%s/core_probe.cache", harness_dir);
+   harness_sibling(sibling, sizeof(sibling), "harness_core_nohw.so");
    open_menu();
    CHECK(task_push_load_contentless_core_from_menu(core_path),
          "the load was not started");
    pump(LOAD_FRAMES);
    CHECK(core_is_up(), "the core did not come up");
 
+   /* The running core is not asked again, and not kept */
    before = core_export("harness_core_env_sets");
    CHECK(task_push_load_contentless_core_from_menu(core_path),
          "the reload was not started");
    CHECK(core_export("harness_core_env_sets") == before,
-         "the push opened a core it had asked before (%u calls on the "
-         "running core, not %u)", core_export("harness_core_env_sets"),
-         before);
+         "the push asked the running core (%u calls, not %u)",
+         core_export("harness_core_env_sets"), before);
    pump(LOAD_FRAMES);
    CHECK(core_is_up(), "the reload did not go through");
-   CHECK(path_is_valid(cache_file), "no %s was written", cache_file);
 
-   /* A changed file is asked again */
-   CHECK(path_get_mtime(core_path, &mtime), "no mtime for the core");
-   CHECK(path_set_mtime(core_path, mtime + 10), "could not touch the core");
-   before = core_export("harness_core_env_sets");
-   CHECK(task_push_load_contentless_core_from_menu(core_path),
-         "the load of the changed core was not started");
-   CHECK(core_export("harness_core_env_sets") == before + 2,
-         "the changed core was not asked again (%u calls, expected %u)",
-         core_export("harness_core_env_sets"), before + 2);
-   pump(LOAD_FRAMES);
-   CHECK(core_is_up(), "the load of the changed core did not go through");
-
-   /* The record of the changed file comes back from disk */
    runloop_core_probe_cache_free();
+   remove(cache_file);
    before = core_export("harness_core_env_sets");
-   CHECK(task_push_load_contentless_core_from_menu(core_path),
-         "the load after the records were dropped was not started");
+   CHECK(libretro_get_system_info(core_path, &info, &no_game),
+         "the running core was not probed");
    CHECK(core_export("harness_core_env_sets") == before,
-         "the record was not read back from %s", cache_file);
-   pump(LOAD_FRAMES);
-   CHECK(core_is_up(), "the load after the records were dropped did not "
-         "go through");
+         "the probe asked the running core (%u calls, not %u)",
+         core_export("harness_core_env_sets"), before);
+   CHECK(!cache_names(cache_file, core_path),
+         "a record was kept for the running core");
 
-   path_set_mtime(core_path, mtime);
+   /* A core that is not running, held open here so its count lasts
+    * across the probe's own open and close */
+   CHECK((lib = dylib_load(sibling)) != NULL, "could not open %s", sibling);
+   before = sibling_env_sets(lib);
+   CHECK(libretro_get_system_info(sibling, &info, &no_game),
+         "%s was not probed", sibling);
+   CHECK(sibling_env_sets(lib) > before,
+         "the probe did not ask %s", sibling);
+   CHECK(cache_names(cache_file, sibling), "no record of %s in %s",
+         sibling, cache_file);
+
+   before = sibling_env_sets(lib);
+   CHECK(libretro_get_system_info(sibling, &info, &no_game),
+         "%s was not probed again", sibling);
+   CHECK(sibling_env_sets(lib) == before,
+         "a core already asked was asked again (%u calls, not %u)",
+         sibling_env_sets(lib), before);
+
+   /* A changed file is asked again, and its record rewritten */
+   CHECK(path_get_mtime(sibling, &mtime), "no mtime for %s", sibling);
+   CHECK(path_set_mtime(sibling, mtime + 10), "could not touch %s", sibling);
+   snprintf(stamp, sizeof(stamp), "\t%" PRId64 "\t", mtime + 10);
+   before = sibling_env_sets(lib);
+   CHECK(libretro_get_system_info(sibling, &info, &no_game),
+         "the changed %s was not probed", sibling);
+   CHECK(sibling_env_sets(lib) > before,
+         "the changed core was not asked again");
+   CHECK(cache_names(cache_file, stamp),
+         "the record in %s does not hold the new mtime", cache_file);
+
+   /* The record comes back from disk */
+   runloop_core_probe_cache_free();
+   before = sibling_env_sets(lib);
+   CHECK(libretro_get_system_info(sibling, &info, &no_game),
+         "%s was not probed after the records were dropped", sibling);
+   CHECK(sibling_env_sets(lib) == before,
+         "the record was not read back from %s", cache_file);
+
+   path_set_mtime(sibling, mtime);
+   dylib_close(lib);
+
+   /* The probes named the sibling: the running core's names again */
+   CHECK(task_push_load_contentless_core_from_menu(core_path),
+         "the load after the probes was not started");
+   pump(LOAD_FRAMES);
+   CHECK(core_is_up(), "the load after the probes did not go through");
+
    if (failures == had)
       fprintf(stderr, "[pass] probe-cached lane\n");
 }
@@ -983,6 +1111,91 @@ static void lane_close_waits_for_save(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Lane: a quit waits for a save in flight, presenting                */
+/* ------------------------------------------------------------------ */
+
+/* A quit while a save state is being written: the state file must be
+ * whole before the exit, and the wait is spent in the frame loop -
+ * frames presented, retro_run never entered - rather than inside the
+ * quit.  CMD_EVENT_QUIT returns with the quit pending; runloop_iterate()
+ * goes on returning 1 until the save is through, then finishes the
+ * quit (shutdown begins only then) and returns -1.  The session ends
+ * here, so this lane runs last. */
+static bool state_task_in_flight(void)
+{
+   return content_save_state_in_progress(NULL)
+       || content_load_state_in_progress(NULL);
+}
+
+static void lane_quit_waits_for_save(void)
+{
+   runloop_state_t *runloop_st = runloop_state_get_ptr();
+   settings_t *settings        = config_get_ptr();
+   unsigned had = failures;
+   unsigned i, runs_at_quit, presented_waiting = 0, waited = 0;
+   bool shutdown_early = false;
+   int ret = 1;
+
+   if (menu_is_up())
+      command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+   pump(2);
+   CHECK(core_is_up() && !menu_is_up(), "not running the core");
+
+   /* The contentless core saves into a folder of its own, which the
+    * lanes before have not made. */
+   {
+      char state_dir[PATH_MAX_LENGTH];
+      fill_pathname_basedir(state_dir, runloop_st->name.savestate,
+            sizeof(state_dir));
+      path_mkdir(state_dir);
+   }
+   /* The slot's file exists from the lanes before, so the save first
+    * loads it into the undo buffer and is only pushed once that load
+    * is through: the quit has to wait for the pair. */
+   configuration_set_int(settings, settings->ints.state_slot, 0);
+   CHECK(command_event(CMD_EVENT_SAVE_STATE, NULL), "save state not started");
+   CHECK(state_task_in_flight(), "no state task in flight");
+
+   hook_install();
+   runs_at_quit = core_export("harness_core_runs");
+   command_event(CMD_EVENT_QUIT, NULL);
+   CHECK(state_task_in_flight(),
+         "the quit returned with the save already written: it waited "
+         "inside the command");
+   CHECK(!(runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED),
+         "shutdown began before the save was written");
+
+   /* As the main loop drives it, the queue checked after each frame;
+    * the bound only stops a quit that never ends. */
+   for (i = 0; i < 20000; i++)
+   {
+      unsigned before = presented;
+      ret = runloop_iterate();
+      task_queue_check();
+      if (ret == -1)
+         break;
+      waited++;
+      presented_waiting += presented - before;
+      if (runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED)
+         shutdown_early = true;
+   }
+   CHECK(ret == -1, "the loop did not end after the save (%u frames)", waited);
+   CHECK(waited >= 1, "the quit never waited for the save (%u frames)", waited);
+   CHECK(presented_waiting >= 1,
+         "no frame presented while the quit waited (%u frames)", waited);
+   CHECK(!shutdown_early, "shutdown began while the save was still writing");
+   CHECK(!state_task_in_flight(), "the save did not finish");
+   CHECK(core_export("harness_core_runs") == runs_at_quit,
+         "retro_run entered while the quit waited");
+   CHECK(runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED,
+         "the quit did not finish");
+
+   if (failures == had)
+      fprintf(stderr, "[pass] quit-waits-for-save lane (%u frames waited, "
+            "%u presented)\n", waited, presented_waiting);
+}
+
+/* ------------------------------------------------------------------ */
 /* Lane: host setup waits for the relay query from the frame loop      */
 /* ------------------------------------------------------------------ */
 
@@ -1440,10 +1653,9 @@ static void lane_acceptance(const char *dir)
 }
 
 /* ------------------------------------------------------------------ */
-/* Lane: replay reply                                                  */
+/* Lanes: answered once the work is through                            */
 /* ------------------------------------------------------------------ */
 
-#ifdef HAVE_BSV_MOVIE
 /* A command interface of the test's own: which sender a reply is for
  * is 'source' at the time of the reply, as with the network
  * interface's last datagram source. */
@@ -1451,8 +1663,10 @@ static int      rr_source;
 static unsigned rr_replies;
 static int      rr_reply_to;          /* the sender the reply went to */
 static char     rr_reply[128];
-static bool     rr_in_command;        /* inside command_play_replay_slot */
+static bool     rr_in_command;        /* inside the command handler */
 static unsigned rr_in_command_replies;
+static unsigned rr_state_calls;       /* core state calls by the handler */
+static unsigned rr_polled_switching;  /* polls during a content load */
 
 static void rr_record(int to, const char *s, size_t len)
 {
@@ -1487,14 +1701,55 @@ static void rr_reply_to_cb(command_t *cmd, void *dest, const char *s, size_t len
    rr_record(*(int*)dest, s, len);
 }
 
-static bool rr_play(command_t *cmd, const char *slot)
+static void rr_poll(command_t *cmd)
 {
+   (void)cmd;
+   if (runloop_is_content_switching())
+      rr_polled_switching++;
+}
+
+static bool rr_run(command_t *cmd,
+      bool (*handler)(command_t *cmd, const char *arg), const char *arg)
+{
+   unsigned before = core_export("harness_core_state_calls");
    bool ok;
-   rr_in_command = true;
-   ok            = command_play_replay_slot(cmd, slot);
-   rr_in_command = false;
+   rr_in_command  = true;
+   ok             = handler(cmd, arg);
+   rr_in_command  = false;
+   rr_state_calls = core_export("harness_core_state_calls") - before;
    return ok;
 }
+
+/* Runs @handler as a command, then frames until it is answered. */
+static bool rr_ask(command_t *cmd,
+      bool (*handler)(command_t *cmd, const char *arg), const char *arg)
+{
+   unsigned n;
+   bool ok;
+   rr_replies  = rr_in_command_replies = 0;
+   rr_reply[0] = '\0';
+   ok          = rr_run(cmd, handler, arg);
+   for (n = 0; n < 300 && !rr_replies; n++)
+      pump(1);
+   return ok;
+}
+
+/* The harness core running, the menu closed. */
+static void run_harness_core(void)
+{
+   if (     !core_is_up()
+         || runloop_state_get_ptr()->current_core_type == CORE_TYPE_DUMMY)
+   {
+      CHECK(task_push_load_contentless_core_from_menu(core_path),
+            "the load was not started");
+      pump(200);
+   }
+   if (menu_is_up())
+      command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+   pump(2);
+}
+
+#ifdef HAVE_BSV_MOVIE
 
 /* PLAY_REPLAY_SLOT answers with the replay's handle, which the movie
  * task installs from its callback.  The command returns at once and
@@ -1527,7 +1782,10 @@ static void lane_replay_reply(const char *dir)
    configuration_set_bool(settings, settings->bools.replay_auto_index, false);
    configuration_set_int(settings, settings->ints.replay_slot, 3);
    CHECK(command_event(CMD_EVENT_RECORD_REPLAY, NULL), "recording did not start");
-   pump(30);
+   pump(10);
+   /* a checkpoint for SEEK_REPLAY below to land on */
+   command_event(CMD_EVENT_SAVE_REPLAY_CHECKPOINT, NULL);
+   pump(20);
    command_event(CMD_EVENT_HALT_REPLAY, NULL);
    pump(2);
    runloop_get_replay_path(path, sizeof(path), 3);
@@ -1541,7 +1799,7 @@ static void lane_replay_reply(const char *dir)
 
    rr_replies = rr_in_command_replies = 0;
    rr_source  = 1;
-   CHECK(rr_play(&cmd, slot), "PLAY_REPLAY_SLOT did not start playback");
+   CHECK(rr_run(&cmd, command_play_replay_slot, slot), "PLAY_REPLAY_SLOT did not start playback");
    CHECK(rr_in_command_replies == 0,
          "PLAY_REPLAY_SLOT answered before returning: it held the frame "
          "until the movie task was through");
@@ -1562,19 +1820,45 @@ static void lane_replay_reply(const char *dir)
          "reply \"%s\" does not carry the replay handle", rr_reply);
    pump(5);
    CHECK(rr_replies == 1, "the reply was sent again");
+
+   /* SEEK_REPLAY: a line-based interface is answered at once, as it
+    * always was; a structured one once the seek has run. */
+   {
+      char want[64];
+      rr_replies = rr_in_command_replies = 0;
+      rr_source  = 1;
+      CHECK(rr_run(&cmd, command_seek_replay, "25"), "SEEK_REPLAY was refused");
+      snprintf(want, sizeof(want), "OK %lld\n",
+            (long long)input_st->bsv_movie_state.seek_target_frame);
+      CHECK(rr_in_command_replies == 1 && string_is_equal(rr_reply, want),
+            "a line-based SEEK_REPLAY was answered \"%s\" (%u in the command)",
+            rr_reply, rr_in_command_replies);
+      pump(5);
+      cmd.structured = true;
+      CHECK(rr_ask(&cmd, command_seek_replay, "25"),
+            "a structured SEEK_REPLAY was refused");
+      want[strlen(want) - 1] = '\0';
+      CHECK(rr_in_command_replies == 0,
+            "a structured SEEK_REPLAY was answered before the seek ran");
+      CHECK(rr_replies == 1 && string_is_equal(rr_reply, want),
+            "a structured SEEK_REPLAY was answered \"%s\", not \"%s\"",
+            rr_reply, want);
+      cmd.structured = false;
+   }
+
    command_event(CMD_EVENT_HALT_REPLAY, NULL);
    pump(2);
 
    /* The interfaces torn down while the reply is owed. */
    rr_replies = rr_in_command_replies = 0;
    rr_source  = 1;
-   CHECK(rr_play(&cmd, slot), "the second PLAY_REPLAY_SLOT did not start");
+   CHECK(rr_run(&cmd, command_play_replay_slot, slot), "the second PLAY_REPLAY_SLOT did not start");
    input_driver_deinit_command(input_st);
    pump(20);
    CHECK(rr_replies == 0, "a reply went to a torn-down interface");
    command_event(CMD_EVENT_HALT_REPLAY, NULL);
    pump(2);
-   CHECK(rr_play(&cmd, slot), "a dropped reply left the next command refused");
+   CHECK(rr_run(&cmd, command_play_replay_slot, slot), "a dropped reply left the next command refused");
    pump(20);
    CHECK(rr_replies == 1, "the command after a dropped reply was not answered");
    command_event(CMD_EVENT_HALT_REPLAY, NULL);
@@ -1586,6 +1870,116 @@ static void lane_replay_reply(const char *dir)
       fprintf(stderr, "[pass] replay-reply lane (answered after %u frames)\n", n);
 }
 #endif
+
+/* LOAD_STATE_SLOT and SAVE_STATE_SLOT answer once their task is
+ * through, never from within the command: a command can arrive from
+ * the core's own input poll, where serializing re-enters the core. */
+static void lane_state_slot_reply(void)
+{
+   command_t cmd;
+   char saved[PATH_MAX_LENGTH], corrupt[PATH_MAX_LENGTH];
+   unsigned had = failures;
+
+   run_harness_core();
+   memset(&cmd, 0, sizeof(cmd));
+   cmd.replier    = rr_replier;
+   cmd.reply_dest = rr_reply_dest;
+   cmd.reply_to   = rr_reply_to_cb;
+   runloop_get_savestate_path(saved,   sizeof(saved),   2);
+   runloop_get_savestate_path(corrupt, sizeof(corrupt), 3);
+   remove(saved);
+
+   CHECK(rr_ask(&cmd, command_save_state_slot, "2"),
+         "SAVE_STATE_SLOT was refused");
+   CHECK(rr_state_calls == 0 && rr_in_command_replies == 0,
+         "SAVE_STATE_SLOT saved from within the command");
+   CHECK(string_is_equal(rr_reply, "SAVE_STATE_SLOT 2") && path_is_valid(saved),
+         "SAVE_STATE_SLOT answered \"%s\"", rr_reply);
+
+   CHECK(rr_ask(&cmd, command_load_state_slot, "2"),
+         "LOAD_STATE_SLOT was refused");
+   CHECK(rr_state_calls == 0 && rr_in_command_replies == 0,
+         "LOAD_STATE_SLOT loaded from within the command");
+   CHECK(string_is_equal(rr_reply, "LOAD_STATE_SLOT 2"),
+         "LOAD_STATE_SLOT answered \"%s\"", rr_reply);
+
+   /* shorter than the core's state: retro_unserialize() refuses it */
+   filestream_write_file(corrupt, "short", 5);
+   rr_ask(&cmd, command_load_state_slot, "3");
+   CHECK(strncmp(rr_reply, "LOAD_STATE_SLOT ERROR", 21) == 0,
+         "a state the core refused was answered \"%s\"", rr_reply);
+
+   remove(saved);
+   remove(corrupt);
+   if (failures == had)
+      fprintf(stderr, "[pass] state-slot-reply lane\n");
+}
+
+/* LOAD_CONTENT and CLOSE_CONTENT, asked by a structured interface,
+ * answer once the load is through. The command interfaces outlive the
+ * load, and are not polled while it runs: what reaches them waits. */
+static void lane_content_reply(const char *dir)
+{
+   input_driver_state_t *input_st = input_state_get_ptr();
+   command_t cmd, **slot = &input_st->command[MAX_CMD_DRIVERS - 1];
+   char content[600], arg[1200];
+   unsigned gen, had = failures;
+
+   run_harness_core();
+   /* made as the settings ask: a lane before tore them down by hand */
+   input_driver_refresh_command(input_st, config_get_ptr());
+   CHECK(!*slot, "no free command interface slot");
+   if (*slot)
+      return;
+   memset(&cmd, 0, sizeof(cmd));
+   cmd.poll       = rr_poll;
+   cmd.replier    = rr_replier;
+   cmd.reply_dest = rr_reply_dest;
+   cmd.reply_to   = rr_reply_to_cb;
+   cmd.structured = true;
+   *slot          = &cmd;
+   gen            = input_driver_command_generation();
+   snprintf(content, sizeof(content), "%s/harness.bin", dir);
+   filestream_write_file(content, "harness", 7);
+   snprintf(arg, sizeof(arg), "%s|%s", core_path, content);
+
+   rr_polled_switching = 0;
+   CHECK(rr_ask(&cmd, command_load_content, arg), "LOAD_CONTENT was refused");
+   CHECK(rr_in_command_replies == 0,
+         "LOAD_CONTENT answered before the load was through");
+   CHECK(rr_polled_switching == 0,
+         "the command interfaces were polled %u times during the load",
+         rr_polled_switching);
+   CHECK(strncmp(rr_reply, "LOAD_CONTENT ", 13) == 0
+         && !strstr(rr_reply, " ERROR"),
+         "LOAD_CONTENT answered \"%s\"", rr_reply);
+   CHECK(input_driver_command_generation() == gen && *slot == &cmd,
+         "the command interfaces were remade by the load");
+
+   /* the dummy core in the failed core's place is no success */
+   snprintf(arg, sizeof(arg), "%.500s.missing|%s", core_path, content);
+   rr_ask(&cmd, command_load_content, arg);
+   CHECK(strncmp(rr_reply, "LOAD_CONTENT ERROR", 18) == 0,
+         "a core that failed to load was answered \"%s\"", rr_reply);
+
+   /* a line-based interface has never been told, and is not */
+   cmd.structured = false;
+   snprintf(arg, sizeof(arg), "%s|%s", core_path, content);
+   rr_ask(&cmd, command_load_content, arg);
+   CHECK(rr_replies == 0, "a line-based interface was answered \"%s\"",
+         rr_reply);
+   cmd.structured = true;
+
+   rr_ask(&cmd, command_close_content, "");
+   CHECK(string_is_equal(rr_reply, "CLOSE_CONTENT"),
+         "CLOSE_CONTENT answered \"%s\"", rr_reply);
+
+   *slot = NULL;
+   remove(content);
+   run_harness_core();
+   if (failures == had)
+      fprintf(stderr, "[pass] content-reply lane\n");
+}
 
 /* ------------------------------------------------------------------ */
 /* Lane: screenshot steps                                              */
@@ -1750,6 +2144,24 @@ static void probe_main_handler(retro_task_t *task)
  * the queue again from within it, running the main-thread tasks a
  * second time in the same check. */
 #if defined(HAVE_RUNAHEAD) && defined(HAVE_DYNAMIC) && defined(HAVE_THREADS)
+/* Until the copy task has an answer: it reads and writes the whole
+ * core file, which a loaded runner takes seconds over */
+static enum runahead_copy_status secondary_wait(runloop_state_t *runloop_st,
+      settings_t *settings)
+{
+   retro_time_t deadline = cpu_features_get_time_usec() + 10000000;
+   for (;;)
+   {
+      enum runahead_copy_status st =
+         secondary_core_ensure_exists(runloop_st, settings);
+      if (     st != RUNAHEAD_COPY_PENDING
+            || cpu_features_get_time_usec() > deadline)
+         return st;
+      task_queue_check();
+      retro_sleep(1);
+   }
+}
+
 /* Run-ahead's second instance on the threaded queue: the task copies
  * the core and opens the copy on the worker, and the main thread
  * takes the open handle.  The instance is the copy's own - its
@@ -1766,7 +2178,7 @@ static void lane_secondary_threaded(void)
    const char *slash            = strrchr(core_path, '/');
    char nohw[600];
    unsigned primary_inits;
-   unsigned had = failures, n;
+   unsigned had = failures;
 
    snprintf(nohw, sizeof(nohw), "%.*s/harness_core_nohw.so",
          slash ? (int)(slash - core_path) : 1, slash ? core_path : ".");
@@ -1780,12 +2192,7 @@ static void lane_secondary_threaded(void)
    CHECK(core_is_up(), "the core did not come up");
    primary_inits = core_inits();
 
-   for (n = 0; n < LOAD_FRAMES * 4 && st == RUNAHEAD_COPY_PENDING; n++)
-   {
-      st = secondary_core_ensure_exists(runloop_st, settings);
-      task_queue_check();
-      retro_sleep(1);
-   }
+   st = secondary_wait(runloop_st, settings);
    CHECK(st == RUNAHEAD_COPY_READY, "the second instance was not created (%d)",
          (int)st);
    CHECK(runloop_st->secondary_lib_handle != NULL,
@@ -1822,7 +2229,7 @@ static void lane_secondary_threaded(void)
    pump(2);
 
    if (failures == had)
-      fprintf(stderr, "[pass] secondary-threaded lane (%u polls)\n", n);
+      fprintf(stderr, "[pass] secondary-threaded lane\n");
 }
 #endif
 
@@ -1842,7 +2249,7 @@ static void lane_secondary_keeps_callbacks(void)
    struct retro_hw_render_callback *hwr;
    hw_fn_t    primary_hw    = NULL;
    types_fn_t primary_types = NULL;
-   unsigned had = failures, n;
+   unsigned had = failures;
 
    configuration_set_bool(settings, settings->bools.threaded_data_runloop_enable, true);
    task_queue_set_threaded();
@@ -1860,12 +2267,7 @@ static void lane_secondary_keeps_callbacks(void)
    }
    CHECK(primary_hw && primary_types, "the harness core exports are missing");
 
-   for (n = 0; n < LOAD_FRAMES * 4 && st == RUNAHEAD_COPY_PENDING; n++)
-   {
-      st = secondary_core_ensure_exists(runloop_st, settings);
-      task_queue_check();
-      retro_sleep(1);
-   }
+   st = secondary_wait(runloop_st, settings);
    CHECK(st == RUNAHEAD_COPY_READY, "the second instance was not created (%d)",
          (int)st);
 
@@ -2082,6 +2484,138 @@ static void lane_close_content(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Lane: dummy session describes the selected core                    */
+/* ------------------------------------------------------------------ */
+
+/* How a static build boots: the dummy session carries the selected
+ * core's system info, or the menu offers no Start Core. */
+static void lane_dummy_selected_core(void)
+{
+   struct load_frame log[LOAD_FRAMES];
+   content_ctx_info_t content_info = {0};
+   runloop_state_t *runloop_st = runloop_state_get_ptr();
+   unsigned n;
+   unsigned had = failures;
+
+   open_menu();
+   path_set(RARCH_PATH_CORE, core_path);
+
+   CHECK(task_push_start_dummy_core(&content_info),
+         "the dummy session was not started");
+   n = run_load(log, LOAD_FRAMES);
+   CHECK(n < LOAD_FRAMES && !runloop_is_content_switching(),
+         "the dummy session did not come up within %u frames",
+         LOAD_FRAMES);
+   CHECK(runloop_st->current_core_type == CORE_TYPE_DUMMY,
+         "the dummy core is not running");
+   CHECK(runloop_st->system.load_no_content,
+         "the selected core's no-game support is missing (no Start Core)");
+   CHECK(string_is_equal(runloop_st->system.info.library_name,
+            "content_load_harness"),
+         "the session names \"%s\", not the selected core",
+         runloop_st->system.info.library_name);
+
+   /* Start Core, to leave a core running */
+   CHECK(task_push_start_current_core(&content_info),
+         "Start Core was not started");
+   n = run_load(log, LOAD_FRAMES);
+   CHECK(n < LOAD_FRAMES && core_is_up()
+         && runloop_st->current_core_type != CORE_TYPE_DUMMY,
+         "Start Core did not go through");
+   runloop_iterate();
+
+   if (failures == had)
+      fprintf(stderr, "[pass] dummy selected-core lane\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* Lane: focus that comes with the frames                             */
+/* ------------------------------------------------------------------ */
+
+/* A window given focus only once it presents, as an OpenXR session
+ * is: a core started from the dummy session is presented and runs,
+ * with Pause When Not Focused on. */
+#define FOCUS_AFTER_FRAMES 3
+#define FOCUS_LANE_FRAMES  30
+
+static video_driver_t focus_null;
+static unsigned focus_presented;
+
+static void *focus_init(const video_info_t *video)
+{
+   focus_presented = 0;
+   return focus_null.init(video);
+}
+
+static bool focus_frame(void *data, const void *frame,
+      unsigned dims, uint64_t frame_count,
+      unsigned pitch, const char *msg, video_frame_info_t *video_info)
+{
+   focus_presented++;
+   return focus_null.frame(data, frame, dims, frame_count,
+         pitch, msg, video_info);
+}
+
+static bool focus_has(void *data)
+{
+   (void)data;
+   return focus_presented >= FOCUS_AFTER_FRAMES;
+}
+
+static void lane_focus_follows_frames(void)
+{
+   struct load_frame log[LOAD_FRAMES];
+   settings_t *settings        = config_get_ptr();
+   runloop_state_t *runloop_st = runloop_state_get_ptr();
+   bool saved_pause            = settings->bools.pause_nonactive;
+   unsigned i, n, runs;
+   unsigned had = failures;
+
+   configuration_set_bool(settings, settings->bools.pause_nonactive, true);
+   focus_null       = video_null;
+   video_null.init  = focus_init;
+   video_null.frame = focus_frame;
+   video_null.focus = focus_has;
+
+   /* as after starting RetroArch with no core: none has run a frame */
+   command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+   pump(LOAD_FRAMES);
+   open_menu();
+   CHECK(runloop_st->current_core_type == CORE_TYPE_DUMMY,
+         "the core was not unloaded");
+
+   CHECK(task_push_load_contentless_core_from_menu(core_path),
+         "the load was not started");
+   n = run_load(log, LOAD_FRAMES);
+   CHECK(n < LOAD_FRAMES && core_is_up()
+         && runloop_st->current_core_type != CORE_TYPE_DUMMY,
+         "the load did not go through");
+   CHECK(!video_driver_has_focus(),
+         "the rebuilt window has focus before it presented");
+
+   runs = core_export("harness_core_runs");
+   for (i = 0; i < FOCUS_LANE_FRAMES; i++)
+   {
+      runloop_iterate();
+      task_queue_check();
+   }
+   CHECK(focus_presented >= FOCUS_AFTER_FRAMES,
+         "%u frames presented to the unfocused window in %u iterations: "
+         "it never gets its focus", focus_presented, FOCUS_LANE_FRAMES);
+   CHECK(core_export("harness_core_runs") > runs + FOCUS_LANE_FRAMES / 2,
+         "the core ran %u frames in %u iterations",
+         core_export("harness_core_runs") - runs, FOCUS_LANE_FRAMES);
+   CHECK(!(runloop_st->flags & RUNLOOP_FLAG_PAUSED),
+         "the core is still paused with the window focused");
+
+   video_null = focus_null;
+   configuration_set_bool(settings, settings->bools.pause_nonactive,
+         saved_pause);
+   if (failures == had)
+      fprintf(stderr, "[pass] focus follows frames lane\n");
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(int argc, char *argv[])
 {
@@ -2129,7 +2663,20 @@ int main(int argc, char *argv[])
        * the close-waits-for-save lane needs a save that can be
        * written, on every load */
       fprintf(cfg, "savestate_directory = \"%s\"\n", dir);
+      fprintf(cfg, "playlist_directory = \"%s/playlists\"\n", dir);
       fclose(cfg);
+   }
+   {
+      char playlist[600];
+      FILE *lpl;
+      snprintf(playlist, sizeof(playlist), "%s/playlists", dir);
+      path_mkdir(playlist);
+      snprintf(playlist, sizeof(playlist), "%s/playlists/harness.lpl", dir);
+      if ((lpl = fopen(playlist, "wb")))
+      {
+         fprintf(lpl, "{\"version\": \"1.5\", \"items\": []}\n");
+         fclose(lpl);
+      }
    }
 
    if (getenv("HARNESS_VERBOSE"))
@@ -2166,6 +2713,7 @@ int main(int argc, char *argv[])
    if (getenv("HARNESS_VERBOSE"))
       rarch_argv[rarch_argc++] = (char*)"-v";
 
+   retroarch_user_dirs_hold();
    if (!retroarch_main_init(rarch_argc, rarch_argv))
    {
       fprintf(stderr, "FAIL: retroarch_main_init failed\n");
@@ -2179,6 +2727,7 @@ int main(int argc, char *argv[])
    CHECK(runloop_state_get_ptr()->current_core_type != CORE_TYPE_DUMMY,
          "harness core did not start (dummy core running)");
 
+   lane_user_dirs_held(dir);
    lane_staged();
    lane_core_opened_once();
 #if defined(HAVE_DYNAMIC)
@@ -2202,6 +2751,8 @@ int main(int argc, char *argv[])
    lane_hw_request();
    lane_queue_survives();
    lane_close_content();
+   lane_dummy_selected_core();
+   lane_focus_follows_frames();
    lane_close_waits_for_save();
 #ifdef HAVE_NETWORKING
    lane_host_setup_deferred();
@@ -2210,6 +2761,8 @@ int main(int argc, char *argv[])
 #ifdef HAVE_BSV_MOVIE
    lane_replay_reply(dir);
 #endif
+   lane_state_slot_reply();
+   lane_content_reply(dir);
 #if defined(HAVE_SCREENSHOTS) && defined(HAVE_RPNG)
    lane_screenshot_steps(dir);
 #endif
@@ -2219,6 +2772,8 @@ int main(int argc, char *argv[])
    lane_prefetch_follows_new_core();
    lane_contentless_names();
 #endif
+   /* Last of all: the session ends with it. */
+   lane_quit_waits_for_save();
 
    main_exit(NULL);
 
@@ -2245,6 +2800,26 @@ int main(int argc, char *argv[])
       snprintf(leftover, sizeof(leftover),
             "%s/content_load_harness/content_load_harness.state.png", dir);
       remove(leftover);
+      {
+         static const char *const lpls[] = {
+            "content_favorites.lpl", "content_history.lpl",
+            "content_music_history.lpl", "content_image_history.lpl",
+            "content_video_history.lpl"
+         };
+         unsigned i;
+         for (i = 0; i < sizeof(lpls) / sizeof(lpls[0]); i++)
+         {
+            snprintf(leftover, sizeof(leftover), "%s/playlists/builtin/%s",
+                  dir, lpls[i]);
+            remove(leftover);
+         }
+         snprintf(leftover, sizeof(leftover), "%s/playlists/builtin", dir);
+         rmdir(leftover);
+         snprintf(leftover, sizeof(leftover), "%s/playlists/harness.lpl", dir);
+         remove(leftover);
+         snprintf(leftover, sizeof(leftover), "%s/playlists", dir);
+         rmdir(leftover);
+      }
       /* the per-core save folder a content load makes */
       snprintf(leftover, sizeof(leftover), "%s/content_load_harness", dir);
       rmdir(leftover);

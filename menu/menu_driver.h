@@ -109,6 +109,7 @@ enum menu_settings_type
    MENU_SETTING_DROPDOWN_ITEM,
    MENU_SETTING_DROPDOWN_ITEM_RESOLUTION,
    MENU_SETTING_DROPDOWN_ITEM_CRT_SUPER_RESOLUTION,
+   MENU_SETTING_DROPDOWN_ITEM_HEADSET_REFRESH_RATE,
    MENU_SETTING_DROPDOWN_ITEM_VIDEO_SHADER_PARAM,
    MENU_SETTING_DROPDOWN_ITEM_VIDEO_SHADER_PRESET_PARAM,
    MENU_SETTING_DROPDOWN_ITEM_VIDEO_SHADER_NUM_PASS,
@@ -502,16 +503,11 @@ struct menu_state
     * polls so that a stall after the last poll is not counted as
     * time the button was held. */
    retro_time_t input_time_us;
-   retro_time_t input_poll_time_us;
-   retro_time_t powerstate_last_time_us;
-   retro_time_t datetime_last_time_us;
    retro_time_t input_last_time_us;
    menu_input_t input_state;               /* retro_time_t alignment */
 
-   retro_time_t prev_start_time;
-   retro_time_t noop_press_time;
-   retro_time_t noop_start_time;
-   retro_time_t action_start_time;
+   /* How long a held direction has been repeating, in real time: held
+    * Left/Right on a number speeds up by it. Set by menu_event(). */
    retro_time_t action_press_time;
 
    struct menu_bind_state input_binds;     /* uint64_t alignment */
@@ -538,14 +534,16 @@ struct menu_state
       size_t   index_list[SCROLL_INDEX_SIZE];
       unsigned index_size;
       unsigned acceleration;
+      /* entries this frame's Up or Down moves: set by a held
+       * direction's repeat (as many as its speed made due since the last
+       * frame); 0 for a press, which moves as the acceleration says */
+      unsigned steps;
       enum menu_scroll_mode mode;
    } scroll;
 
    /* unsigned alignment */
    unsigned input_dialog_kb_idx;
-   unsigned input_driver_flushing_input;
    menu_dialog_t dialog_st;
-   enum menu_action prev_action;
    enum menu_input_dialog_kb_text_type input_dialog_kb_text_type;
 #ifdef HAVE_RUNAHEAD
    unsigned int runahead_mode;
@@ -578,6 +576,14 @@ struct menu_state
 #ifdef HAVE_MENU
    char input_dialog_kb_label_setting[256];
    char input_dialog_kb_label[256];
+
+   /* The on-screen keyboard, which is the menu's widget: what its keys
+    * show, where its cursor is, and which page of keys is up. What it
+    * types goes to the frontend's line of text, as a hardware key's
+    * does. */
+   char *osk_grid[45];
+   int osk_ptr;
+   enum osk_type osk_idx;
 #endif
    unsigned char kb_key_state[RETROK_LAST];
 
@@ -820,6 +826,14 @@ size_t menu_update_fullscreen_thumbnail_label(
       bool is_quick_menu, const char *title);
 
 bool menu_is_running_quick_menu(void);
+
+/* "Find a Button by Pressing It": waits for a button of @port's
+ * controller and puts the selection on its entry. */
+void menu_input_remap_find_begin(unsigned port);
+/* A combination's buttons set by holding them, on a screen of its own
+ * that takes the menu's input meanwhile. False if there is no such
+ * combination. */
+bool menu_input_entry_capture_begin(unsigned number);
 
 bool menu_input_key_bind_set_mode(
       enum menu_input_binds_ctl_state state, void *data);

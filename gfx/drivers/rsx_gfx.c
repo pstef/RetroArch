@@ -103,6 +103,7 @@ typedef struct
 {
    gcmTexture tex;
    u32 *data;
+   u32 size;   /* bytes data holds */
    u32 offset;
    u32 wrap_s;
    u32 wrap_t;
@@ -149,6 +150,8 @@ typedef struct
 #endif
    rsx_texture_t texture[RSX_MAX_TEXTURES];
    rsx_texture_t menu_texture;
+   /* Sampled by a quad drawn with no texture: solid colour */
+   rsx_texture_t *white_texture;
    rsx_vertex_t *vertices;
    rsx_vertex_t *texture_vertices;
    int tex_index;
@@ -186,6 +189,8 @@ typedef struct
    unsigned overlays;
    bool overlay_enable;
    bool overlay_full_screen;
+   /* overlay[].texture are the overlay pack's (load_textures) */
+   bool overlay_borrowed;
 #endif
 
    unsigned rotation;
@@ -267,8 +272,7 @@ typedef struct
    void *font_data;
    struct font_atlas *atlas;
    video_font_raster_block_t *block;
-   u32 tex_width;
-   u32 tex_height;
+   unsigned tex_dims;
    /* Texture memory the atlas outgrew: a frame in flight may still
     * draw from it, and freeing it means waiting for the RSX, so it goes
     * when the font does - the atlas grows at most twice */
@@ -351,7 +355,8 @@ static void gfx_display_rsx_draw(gfx_display_ctx_draw_t *draw,
    if (!rsx || !draw)
       return;
 
-   texture                  = (rsx_texture_t *)draw->texture;
+   texture                  = draw->texture
+      ? (rsx_texture_t *)draw->texture : rsx->white_texture;
    vertex                   = draw->coords->vertex;
    tex_coord                = draw->coords->tex_coord;
    color                    = draw->coords->color;
@@ -360,12 +365,11 @@ static void gfx_display_rsx_draw(gfx_display_ctx_draw_t *draw,
       vertex                = &rsx_vertexes[0];
    if (!tex_coord)
       tex_coord             = &rsx_tex_coords[0];
-   if (!draw->texture)
+   if (!texture)
       return;
 
    vp.pos                   = VIDEO_POS_PACK(abs(VIDEO_POS_X(draw->pos)),
-         abs((int)rsx->height - VIDEO_POS_Y(draw->pos)
-            - (int)VIDEO_SCALE_H(draw->dims)));
+         abs(VIDEO_POS_FLIP_Y(rsx->height, draw->pos, draw->dims)));
    vp.dims                  = VIDEO_SCALE_PACK(
          MIN(VIDEO_SCALE_W(draw->dims), rsx->width),
          MIN(VIDEO_SCALE_H(draw->dims), rsx->height));
@@ -552,8 +556,8 @@ static bool rsx_font_upload_atlas(rsx_t *rsx, rsx_font_t *font)
     * contiguous in both buffers and one memcpy of just that band
     * suffices; the initial upload (dirty rect covering everything
     * after the renderer pre-cache) still transfers the full atlas. */
-   unsigned y0                 = font->atlas->dirty_y0;
-   unsigned y1                 = font->atlas->dirty_y1;
+   unsigned y0                 = VIDEO_SCALE_H(font->atlas->dirty_xy0);
+   unsigned y1                 = VIDEO_SCALE_H(font->atlas->dirty_xy1);
    if (y1 > font->atlas->height || y1 <= y0)
    {
       y0 = 0;
@@ -576,10 +580,10 @@ static bool rsx_font_upload_atlas(rsx_t *rsx, rsx_font_t *font)
          | (GCM_TEXTURE_REMAP_COLOR_B    << GCM_TEXTURE_REMAP_COLOR_G_SHIFT)
          | (GCM_TEXTURE_REMAP_COLOR_B    << GCM_TEXTURE_REMAP_COLOR_R_SHIFT)
          | (GCM_TEXTURE_REMAP_COLOR_B    << GCM_TEXTURE_REMAP_COLOR_A_SHIFT));
-   font->texture.tex.width     = font->tex_width;
-   font->texture.tex.height    = font->tex_height;
+   font->texture.tex.width     = VIDEO_SCALE_W(font->tex_dims);
+   font->texture.tex.height    = VIDEO_SCALE_H(font->tex_dims);
    font->texture.tex.depth     = 1;
-   font->texture.tex.pitch     = font->tex_width;
+   font->texture.tex.pitch     = VIDEO_SCALE_W(font->tex_dims);
    font->texture.tex.location  = GCM_LOCATION_RSX;
    font->texture.tex.offset    = font->texture.offset;
    font->texture.wrap_s        = GCM_TEXTURE_CLAMP_TO_EDGE;
@@ -641,20 +645,19 @@ static void *rsx_font_init(void *data,
    font->col_index          = font->rsx->col_index[RSX_SHADER_STOCK_BLEND];
    font->tex_unit           = font->rsx->tex_unit[RSX_SHADER_STOCK_BLEND];
 
-   font->vertices           = (rsx_vertex_t *)rsxMemalign(128,
-         sizeof(rsx_vertex_t) * RSX_MAX_FONT_VERTICES);
+   if (!(font->vertices     = (rsx_vertex_t *)rsxMemalign(128,
+         sizeof(rsx_vertex_t) * RSX_MAX_FONT_VERTICES)))
+      goto error;
    font->rsx->font_vert_idx = 0;
 
    /* The atlas may grow; the texture follows it */
-   font->atlas->max_width   = 2048;
-   font->atlas->max_height  = 2048;
-   font->tex_width          = font->atlas->width;
-   font->tex_height         = font->atlas->height;
-   font->texture.data       = (u32*)rsxMemalign(128, (font->tex_height * font->tex_width));
-   rsxAddressToOffset(font->texture.data, &font->texture.offset);
-
-   if (!font->texture.data)
+   font->atlas->max_dims = VIDEO_SCALE_PACK(2048, 2048);
+   font->tex_dims           = VIDEO_SCALE_PACK(font->atlas->width,
+         font->atlas->height);
+   if (!(font->texture.data = (u32*)rsxMemalign(128,
+         VIDEO_SCALE_AREA(font->tex_dims))))
       goto error;
+   rsxAddressToOffset(font->texture.data, &font->texture.offset);
 
    if (!rsx_font_upload_atlas(font->rsx, font))
       goto error;
@@ -776,8 +779,8 @@ static void rsx_font_render_message(rsx_t *rsx,
    float *font_vertex                     = font->font_vertex;
    float *font_color                      = font->font_color;
    int pre_x                              = roundf(pos_x * VIDEO_SCALE_W(rsx->vp.dims));
-   float inv_tex_size_x                   = 1.0f / font->tex_width;
-   float inv_tex_size_y                   = 1.0f / font->tex_height;
+   float inv_tex_size_x                   = 1.0f / VIDEO_SCALE_W(font->tex_dims);
+   float inv_tex_size_y                   = 1.0f / VIDEO_SCALE_H(font->tex_dims);
    float inv_win_width                    = 1.0f / VIDEO_SCALE_W(rsx->vp.dims);
    float inv_win_height                   = 1.0f / VIDEO_SCALE_H(rsx->vp.dims);
    const struct font_glyph* (*get_glyph)(void*, uint32_t)
@@ -816,10 +819,10 @@ static void rsx_font_render_message(rsx_t *rsx,
    { \
       int off_x   = (glyph)->draw_offset_x; \
       int off_y   = (glyph)->draw_offset_y; \
-      int tex_x   = (glyph)->atlas_offset_x; \
-      int tex_y   = (glyph)->atlas_offset_y; \
-      int width   = (glyph)->width; \
-      int height  = (glyph)->height; \
+      int tex_x   = VIDEO_SCALE_W((glyph)->atlas_pos); \
+      int tex_y   = VIDEO_SCALE_H((glyph)->atlas_pos); \
+      int width   = VIDEO_SCALE_W((glyph)->dims); \
+      int height  = VIDEO_SCALE_H((glyph)->dims); \
       int delta_x = (pen_x); \
       int delta_y = -(pen_y); \
       RSX_FONT_EMIT(0, 0, 1); /* Bottom-left */ \
@@ -886,8 +889,8 @@ static void rsx_font_render_msg(
    {
       font->atlas = font->font_driver->get_atlas(font->font_data);
       if (     font->retired_count < 2
-            && (   font->tex_width  != font->atlas->width
-                || font->tex_height != font->atlas->height))
+            && font->tex_dims != VIDEO_SCALE_PACK(font->atlas->width,
+               font->atlas->height))
       {
          u32 *data = (u32*)rsxMemalign(128,
                font->atlas->width * font->atlas->height);
@@ -896,10 +899,11 @@ static void rsx_font_render_msg(
             font->retired[font->retired_count++] = font->texture.data;
             font->texture.data     = data;
             rsxAddressToOffset(font->texture.data, &font->texture.offset);
-            font->tex_width        = font->atlas->width;
-            font->tex_height       = font->atlas->height;
-            font->atlas->dirty_y0  = 0;
-            font->atlas->dirty_y1  = font->atlas->height;
+            font->tex_dims         = VIDEO_SCALE_PACK(font->atlas->width,
+                  font->atlas->height);
+            font->atlas->dirty_xy0 = 0;
+            font->atlas->dirty_xy1 = font->tex_dims;
+            font->atlas->dirty_rects = 0;
             font->atlas->dirty     = true;
          }
       }
@@ -1018,17 +1022,36 @@ static bool rsx_font_get_line_metrics(void* data, struct font_line_metrics **met
  * VIDEO DRIVER
  */
 
-static void rsx_load_texture_data(rsx_t* rsx, rsx_texture_t *texture,
+static bool rsx_load_texture_data(rsx_t* rsx, rsx_texture_t *texture,
       const void *frame, unsigned width, unsigned height, unsigned pitch,
       bool rgb32, bool menu, enum texture_filter_type filter_type)
 {
    u8 *texbuffer;
    u32 mag_filter, min_filter;
    const u8 *data         = (u8*)frame;
+   u32 bytes              = height * pitch;
+
+   /* The buffer is kept from load to load; a frame bigger than it
+    * (a taller frame, a wider pitch, 16 to 32 bits) gets a new one */
+   if (texture->data && bytes > texture->size)
+   {
+      /* The RSX may still be reading it, as in
+       * rsx_unload_texture_internal */
+      if (rsx && rsx->context)
+         rsxFinish(rsx->context, 0);
+      rsxFree(texture->data);
+      texture->data = NULL;
+      texture->size = 0;
+   }
 
    if (!texture->data)
    {
-      texture->data       = (u32*)rsxMemalign(128, texture->height * pitch);
+      u32 size = texture->height * pitch;
+      if (size < bytes)
+         size = bytes;
+      if (!(texture->data = (u32*)rsxMemalign(128, size)))
+         return false;
+      texture->size = size;
       rsxAddressToOffset(texture->data, &texture->offset);
    }
 
@@ -1077,6 +1100,7 @@ static void rsx_load_texture_data(rsx_t* rsx, rsx_texture_t *texture,
    texture->mag_filter    = mag_filter;
    texture->wrap_s        = GCM_TEXTURE_CLAMP_TO_EDGE;
    texture->wrap_t        = GCM_TEXTURE_CLAMP_TO_EDGE;
+   return true;
 }
 
 static void rsx_set_projection(rsx_t *rsx,
@@ -1205,6 +1229,7 @@ static int rsx_make_buffer(rsx_buffer *buffer, u16 width, u16 height, int id)
 error:
    if (buffer->ptr)
       rsxFree (buffer->ptr);
+   buffer->ptr = NULL;
    return 0;
 }
 
@@ -1324,7 +1349,8 @@ static gcmContextData *rsx_init_screen(rsx_t* gcm)
    gcmSetFlipMode(GCM_FLIP_VSYNC); /* Wait for VSYNC to flip */
 
    gcm->depth_pitch  = res.width * sizeof(u32);
-   gcm->depth_buffer = (u32 *)rsxMemalign(64, (res.height * gcm->depth_pitch));  /* Beware, if was (res.height * gcm->depth_pitch) * 2 */
+   if (!(gcm->depth_buffer = (u32 *)rsxMemalign(64, (res.height * gcm->depth_pitch))))  /* Beware, if was (res.height * gcm->depth_pitch) * 2 */
+      goto error;
 
    rsxAddressToOffset(gcm->depth_buffer, &gcm->depth_offset);
 
@@ -1371,9 +1397,12 @@ static void rsx_init_render_target(rsx_t *rsx, rsx_buffer *buffer, int id)
    rsx->surface[id].y				         = 0;
 }
 
-static void rsx_init_vertices(rsx_t *rsx)
+static bool rsx_init_vertices(rsx_t *rsx)
 {
-   rsx->vertices         = (rsx_vertex_t *)rsxMemalign(128, sizeof(rsx_vertex_t) * RSX_MAX_VERTICES); /* vertices for menu and core */
+   /* vertices for menu and core */
+   if (!(rsx->vertices   = (rsx_vertex_t *)rsxMemalign(128,
+         sizeof(rsx_vertex_t) * RSX_MAX_VERTICES)))
+      return false;
    rsx->vert_idx         = 0;
 
    rsx->vertices[0].x    = 0.0f;
@@ -1414,12 +1443,15 @@ static void rsx_init_vertices(rsx_t *rsx)
 
 #if RSX_MAX_TEXTURE_VERTICES > 0
    /* Using preallocated texture vertices */
-   rsx->texture_vertices = (rsx_vertex_t *)rsxMemalign(128, sizeof(rsx_vertex_t) * RSX_MAX_TEXTURE_VERTICES);
+   if (!(rsx->texture_vertices = (rsx_vertex_t *)rsxMemalign(128,
+         sizeof(rsx_vertex_t) * RSX_MAX_TEXTURE_VERTICES)))
+      return false;
    rsx->texture_vert_idx = 0;
 #endif
+   return true;
 }
 
-static void rsx_init_shader(rsx_t *rsx)
+static bool rsx_init_shader(rsx_t *rsx)
 {
    u32 fpsize                               = 0;
    u32 vpsize                               = 0;
@@ -1433,7 +1465,7 @@ static void rsx_init_shader(rsx_t *rsx)
    if (!rsx->fp_buffer[RSX_SHADER_MENU])
    {
       RARCH_ERR("[RSX] Failed to allocate fp_buffer.\n");
-      return;
+      return false;
    }
    memcpy(rsx->fp_buffer[RSX_SHADER_MENU], rsx->fp_ucode[RSX_SHADER_MENU], fpsize);
    rsxAddressToOffset(rsx->fp_buffer[RSX_SHADER_MENU], &rsx->fp_offset[RSX_SHADER_MENU]);
@@ -1453,7 +1485,7 @@ static void rsx_init_shader(rsx_t *rsx)
    if (!rsx->fp_buffer[RSX_SHADER_STOCK_BLEND])
    {
       RARCH_ERR("[RSX] Failed to allocate fp_buffer.\n");
-      return;
+      return false;
    }
    memcpy(rsx->fp_buffer[RSX_SHADER_STOCK_BLEND], rsx->fp_ucode[RSX_SHADER_STOCK_BLEND], fpsize);
    rsxAddressToOffset(rsx->fp_buffer[RSX_SHADER_STOCK_BLEND], &rsx->fp_offset[RSX_SHADER_STOCK_BLEND]);
@@ -1463,10 +1495,13 @@ static void rsx_init_shader(rsx_t *rsx)
    rsx->uv_index[RSX_SHADER_STOCK_BLEND]    = rsxVertexProgramGetAttrib(rsx->vpo[RSX_SHADER_STOCK_BLEND], "texcoord");
    rsx->tex_unit[RSX_SHADER_STOCK_BLEND]    = rsxFragmentProgramGetAttrib(rsx->fpo[RSX_SHADER_STOCK_BLEND], "texture");
    rsx->bgcolor[RSX_SHADER_STOCK_BLEND]     = rsxFragmentProgramGetConst(rsx->fpo[RSX_SHADER_STOCK_BLEND], "bgcolor");
+   return true;
 }
 
-static void* rsx_init(const video_info_t* video,
-      input_driver_t** input, void** input_data)
+static uintptr_t rsx_load_texture_internal(void *video_data, void *data,
+      enum texture_filter_type filter_type);
+
+static void* rsx_init(const video_info_t* video)
 {
    int i;
    const gfx_ctx_driver_t* ctx_driver = NULL;
@@ -1477,13 +1512,11 @@ static void* rsx_init(const video_info_t* video,
 
    memset(rsx, 0, sizeof(rsx_t));
 
-   rsx->context = rsx_init_screen(rsx);
+   if (!(rsx->context = rsx_init_screen(rsx)))
+      goto error;
 
    if (!(ctx_driver = rsx_get_context(rsx)))
-   {
-      free(rsx);
-      return NULL;
-   }
+      goto error;
 
    video_context_driver_set((const gfx_ctx_driver_t*)ctx_driver);
    rsx->ctx_driver = ctx_driver;
@@ -1491,14 +1524,16 @@ static void* rsx_init(const video_info_t* video,
 
    for (i = 0; i < RSX_MAX_BUFFERS; i++)
    {
-      rsx_make_buffer(&rsx->buffers[i], rsx->width, rsx->height, i);
+      if (!rsx_make_buffer(&rsx->buffers[i], rsx->width, rsx->height, i))
+         goto error;
       rsx_init_render_target(rsx, &rsx->buffers[i], i);
    }
 
 #if defined(HAVE_MENU_BUFFER)
    for (i = 0; i < RSX_MAX_MENU_BUFFERS; i++)
    {
-      rsx_make_buffer(&rsx->menuBuffers[i], rsx->width, rsx->height, i+RSX_MAX_BUFFERS);
+      if (!rsx_make_buffer(&rsx->menuBuffers[i], rsx->width, rsx->height, i+RSX_MAX_BUFFERS))
+         goto error;
       rsx_init_render_target(rsx, &rsx->menuBuffers[i], i+RSX_MAX_BUFFERS);
    }
 #endif
@@ -1513,8 +1548,20 @@ static void* rsx_init(const video_info_t* video,
    rsx->menu_texture.height  = rsx->height;
    rsx->menu_texture.width   = rsx->width;
 
-   rsx_init_shader(rsx);
-   rsx_init_vertices(rsx);
+   if (!rsx_init_shader(rsx) || !rsx_init_vertices(rsx))
+      goto error;
+
+   {
+      static const uint32_t white = 0xffffffffu;
+      struct texture_image image;
+      memset(&image, 0, sizeof(image));
+      image.pixels       = (uint32_t*)&white;
+      image.width        = 1;
+      image.height       = 1;
+      if (!(rsx->white_texture = (rsx_texture_t*)rsx_load_texture_internal(
+            rsx, &image, TEXTURE_FILTER_NEAREST)))
+         goto error;
+   }
 
    rsx_flip(rsx->context, RSX_MAX_BUFFERS - 1);
 
@@ -1525,12 +1572,9 @@ static void* rsx_init(const video_info_t* video,
    video_driver_set_output_dims(rsx->vp.dims);
    rsx_set_viewport(rsx, rsx->vp.dims, false, true);
 
-   if (input && input_data)
-   {
-      void *ps3input         = input_driver_init_wrap(&input_ps3, ps3_joypad.ident);
-      *input                 = ps3input ? &input_ps3 : NULL;
-      *input_data            = ps3input;
-   }
+   /* no input driver of this driver's own: the frontend starts the
+    * platform's */
+   input_driver_video_window(INPUT_WINDOW_PLATFORM, NULL);
 
    rsx_context_bind_hw_render(rsx, true);
 
@@ -1538,6 +1582,19 @@ static void* rsx_init(const video_info_t* video,
       rsx->msg_rendering_enabled = true;
 
    return rsx;
+
+error:
+   /* What the RSX has not drawn from goes. The display and depth
+    * buffers handed to it stay, as rsx_free leaves them. */
+   for (i = 0; i < RSX_MAX_SHADERS; i++)
+      if (rsx->fp_buffer[i])
+         rsxFree(rsx->fp_buffer[i]);
+   if (rsx->vertices)
+      rsxFree(rsx->vertices);
+   if (rsx->texture_vertices)
+      rsxFree(rsx->texture_vertices);
+   free(rsx);
+   return NULL;
 }
 
 static void rsx_update_viewport(rsx_t* rsx)
@@ -1571,12 +1628,17 @@ static uintptr_t rsx_load_texture_internal(void *video_data, void *data,
 {
    rsx_t *rsx                     = (rsx_t *)video_data;
    struct texture_image *image    = (struct texture_image*)data;
-   rsx_texture_t *texture         = (rsx_texture_t *)malloc(sizeof(rsx_texture_t));
+   rsx_texture_t *texture         = (rsx_texture_t *)calloc(1, sizeof(rsx_texture_t));
+   if (!texture)
+      return 0;
    texture->width                 = image->width;
    texture->height                = image->height;
-   texture->data                  = (u32*)rsxMemalign(128, (image->height * image->width*4));
-   rsxAddressToOffset(texture->data, &texture->offset);
-   rsx_load_texture_data(rsx, texture, image->pixels, image->width, image->height, image->width*4, true, false, filter_type);
+   if (!rsx_load_texture_data(rsx, texture, image->pixels, image->width,
+            image->height, image->width*4, true, false, filter_type))
+   {
+      free(texture);
+      return 0;
+   }
 
    return (uintptr_t)texture;
 }
@@ -1630,6 +1692,57 @@ static uintptr_t rsx_texture_unload_wrap(void *data)
    return 0;
 }
 #endif
+
+/* Written in place like the menu texture */
+static void rsx_update_texture_internal(rsx_texture_t *texture,
+      const struct texture_image *ti)
+{
+   memcpy(texture->data, ti->pixels, ti->height * ti->width * 4);
+}
+
+#ifdef HAVE_THREADS
+typedef struct
+{
+   rsx_texture_t *texture;
+   const struct texture_image *ti;
+} rsx_update_cmd_t;
+
+static uintptr_t rsx_texture_update_wrap(void *data)
+{
+   rsx_update_cmd_t *cmd = (rsx_update_cmd_t*)data;
+   rsx_update_texture_internal(cmd->texture, cmd->ti);
+   return 1;
+}
+#endif
+
+static enum video_texture_update rsx_update_texture(void *video_data,
+      uintptr_t id, const struct texture_image *ti, bool threaded)
+{
+   rsx_texture_t *texture = (rsx_texture_t*)id;
+
+   if (     !texture || !texture->data
+         || !ti || !ti->pixels || ti->pix10 || ti->fp16
+         || texture->tex.format
+            != (GCM_TEXTURE_FORMAT_A8R8G8B8 | GCM_TEXTURE_FORMAT_LIN)
+         || texture->tex.width  != ti->width
+         || texture->tex.height != ti->height
+         || texture->tex.pitch  != ti->width * 4)
+      return VIDEO_TEXTURE_UPDATE_REFUSED;
+
+#ifdef HAVE_THREADS
+   if (threaded)
+   {
+      rsx_update_cmd_t cmd;
+      cmd.texture = texture;
+      cmd.ti      = ti;
+      video_thread_texture_handle(&cmd, rsx_texture_update_wrap);
+      return VIDEO_TEXTURE_UPDATE_DONE;
+   }
+#endif
+
+   rsx_update_texture_internal(texture, ti);
+   return VIDEO_TEXTURE_UPDATE_DONE;
+}
 
 static uintptr_t rsx_load_texture(void *video_data, void *data,
       bool threaded, enum texture_filter_type filter_type)
@@ -2086,15 +2199,16 @@ static void rsx_free_overlay(rsx_t *rsx)
 
    for (i = 0; i < rsx->overlays; i++)
    {
-      if (rsx->overlay[i].texture.data)
+      if (rsx->overlay[i].texture.data && !rsx->overlay_borrowed)
          rsxFree(rsx->overlay[i].texture.data);
       if (rsx->overlay[i].vertices)
          rsxFree(rsx->overlay[i].vertices);
    }
 
    free(rsx->overlay);
-   rsx->overlay = NULL;
-   rsx->overlays = 0;
+   rsx->overlay          = NULL;
+   rsx->overlays         = 0;
+   rsx->overlay_borrowed = false;
 }
 
 static bool rsx_overlay_load(void *data,
@@ -2115,7 +2229,12 @@ static bool rsx_overlay_load(void *data,
    for (i = 0; i < num_images; i++)
    {
       rsx_overlay_t *o = (rsx_overlay_t *)&rsx->overlay[i];
-      o->vertices = (rsx_vertex_t *)rsxMemalign(128, sizeof(rsx_vertex_t) * RSX_MAX_VERTICES);
+      if (!(o->vertices = (rsx_vertex_t *)rsxMemalign(128,
+            sizeof(rsx_vertex_t) * RSX_MAX_VERTICES)))
+      {
+         rsx_free_overlay(rsx);
+         return false;
+      }
 
       /* Default. Stretch to whole screen. */
       rsx_overlay_tex_geom(rsx, i, 0, 0, 1, 1);
@@ -2130,8 +2249,61 @@ static bool rsx_overlay_load(void *data,
       o->texture.data = NULL;
       o->texture.height = images[i].height;
       o->texture.width = images[i].width;
-      rsx_load_texture_data(rsx, &o->texture, images[i].pixels, images[i].width, images[i].height, images[i].width*4,
-                            true, false, TEXTURE_FILTER_LINEAR);
+      if (!rsx_load_texture_data(rsx, &o->texture, images[i].pixels,
+               images[i].width, images[i].height, images[i].width*4,
+               true, false, TEXTURE_FILTER_LINEAR))
+      {
+         rsx_free_overlay(rsx);
+         return false;
+      }
+   }
+
+   return true;
+}
+
+/* A page of the pack's textures: rsx_load_texture's, drawn from a
+ * copy of each rsx_texture_t, uploaded once for every page */
+static bool rsx_overlay_load_textures(void *data,
+      const uintptr_t *textures, unsigned num_textures)
+{
+   unsigned i, j;
+   rsx_t *rsx = (rsx_t *)data;
+
+   if (!rsx)
+      return false;
+
+   rsx_free_overlay(rsx);
+   if (!num_textures)
+      return true;
+   if (!(rsx->overlay = (rsx_overlay_t *)calloc(num_textures,
+         sizeof(rsx_overlay_t))))
+      return false;
+   rsx->overlays         = num_textures;
+   rsx->overlay_borrowed = true;
+
+   for (i = 0; i < num_textures; i++)
+   {
+      rsx_overlay_t *o = &rsx->overlay[i];
+
+      if (!(o->vertices = (rsx_vertex_t *)rsxMemalign(128,
+            sizeof(rsx_vertex_t) * RSX_MAX_VERTICES)))
+      {
+         rsx_free_overlay(rsx);
+         return false;
+      }
+      if (textures[i])
+         o->texture = *(const rsx_texture_t*)textures[i];
+
+      /* Default. Stretch to whole screen. */
+      rsx_overlay_tex_geom(rsx, i, 0, 0, 1, 1);
+      rsx_overlay_vertex_geom(rsx, i, 0, 0, 1, 1);
+      for (j = 0; j < RSX_MAX_VERTICES; j++)
+      {
+         o->vertices[j].r = 1.0f;
+         o->vertices[j].g = 1.0f;
+         o->vertices[j].b = 1.0f;
+         o->vertices[j].a = 1.0f;
+      }
    }
 
    return true;
@@ -2175,6 +2347,8 @@ static void rsx_render_overlay(void *data)
 
    for (i = 0; i < rsx->overlays; i++)
    {
+      if (!rsx->overlay[i].vertices || !rsx->overlay[i].texture.data)
+         continue;
       rsx_set_texture(rsx, &rsx->overlay[i].texture);
       rsx_draw_overlay_vertices(rsx, i);
    }
@@ -2184,7 +2358,7 @@ static const video_overlay_interface_t rsx_overlay_interface =
 {
    rsx_overlay_enable,
    rsx_overlay_load,
-   NULL, /* load_textures */
+   rsx_overlay_load_textures,
    rsx_overlay_tex_geom,
    rsx_overlay_vertex_geom,
    rsx_overlay_full_screen,
@@ -2269,17 +2443,19 @@ static bool rsx_frame(void* data, const void* frame,
    if (frame && width && height)
    {
       gcm->tex_index  = ((gcm->tex_index + 1) % RSX_MAX_TEXTURES);
-      rsx_load_texture_data(gcm,
+      if (rsx_load_texture_data(gcm,
             &gcm->texture[gcm->tex_index],
             frame, width, height, pitch, gcm->rgb32, false,
             gcm->smooth
             ? TEXTURE_FILTER_LINEAR
-            : TEXTURE_FILTER_NEAREST);
-      /* TODO/FIXME - pipeline ID being used here is RSX_SHADER_MENU,
-       * shouldn't this be RSX_SHADER_STOCK_BLEND instead? */
-      rsx_set_texture(gcm, &gcm->texture[gcm->tex_index]);
-      rsx_draw_vertices(gcm);
-      draw = true;
+            : TEXTURE_FILTER_NEAREST))
+      {
+         /* TODO/FIXME - pipeline ID being used here is RSX_SHADER_MENU,
+          * shouldn't this be RSX_SHADER_STOCK_BLEND instead? */
+         rsx_set_texture(gcm, &gcm->texture[gcm->tex_index]);
+         rsx_draw_vertices(gcm);
+         draw = true;
+      }
    }
 
 #ifdef HAVE_MENU
@@ -2367,6 +2543,8 @@ static void rsx_free(void* data)
    }
    if (gcm->menu_texture.data)
      rsxFree(gcm->menu_texture.data);
+   if (gcm->white_texture)
+     rsx_unload_texture_internal(gcm, (uintptr_t)gcm->white_texture);
    for (i = 0; i < RSX_MAX_BUFFERS; i++)
      rsxFree(gcm->buffers[i].ptr);
 #if defined(HAVE_MENU_BUFFER)
@@ -2530,6 +2708,7 @@ static uintptr_t rsx_load_texture_compressed(void *video_data,
       free(texture);
       return 0;
    }
+   texture->size   = total;
    rsxAddressToOffset(texture->data, &texture->offset);
 
    /* Mip chain is stored contiguously; the RSX derives per-level
@@ -2614,7 +2793,20 @@ static const video_poke_interface_t rsx_poke_interface = {
    NULL, /* set_hdr_scanlines */
    NULL, /* set_hdr_subpixel_layout */
    rsx_supports_texture_format,
-   rsx_load_texture_compressed
+   rsx_load_texture_compressed,
+   NULL, /* present_last */
+   NULL, /* get_last_present_time */
+   NULL, /* hw_ring_install */
+   NULL, /* hw_ring_fence_new */
+   NULL, /* hw_ring_fence_free */
+   NULL, /* hw_ring_fence_signal */
+   NULL, /* hw_ring_fence_wait */
+   NULL, /* hw_ring_capture */
+   NULL, /* hw_ring_present_slot */
+   NULL, /* hw_ring_context_new */
+   NULL, /* hw_ring_context_free */
+   NULL, /* hw_ring_framebuffer */
+   rsx_update_texture
 };
 
 static void rsx_get_poke_interface(void* data,

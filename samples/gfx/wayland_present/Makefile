@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 TARGET := wayland_present_test
 
 # gfx/common/wayland_present.c against a compositor built here on
@@ -18,13 +20,13 @@ SOURCES := wayland_present_test.c \
            $(LRC)/features/features_cpu.c \
            $(LRC)/compat/compat_strl.c
 
-CFLAGS  += -Wall -std=gnu89 -g -O1 \
+CFLAGS  += -Wall -std=gnu89 -g1 -O1 \
            -DRARCH_INTERNAL -DHAVE_WAYLAND -D_GNU_SOURCE \
            -I. -I$(REPO_ROOT) -I$(LRC)/include \
            $(shell pkg-config --cflags wayland-client wayland-server)
 LDFLAGS += $(shell pkg-config --libs wayland-client wayland-server) -lpthread
 
-OBJS := $(SOURCES:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
 ifneq ($(SANITIZER),)
    CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer $(CFLAGS)
@@ -45,6 +47,10 @@ $(OBJS): $(GENERATED) $(CLIENT_H)
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
 
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) -c -o $@ $< $(CFLAGS)
+
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
@@ -52,6 +58,7 @@ check: $(TARGET)
 	./$(TARGET)
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(TARGET) $(OBJS) $(GENERATED)
 
 .PHONY: all check clean

@@ -160,9 +160,17 @@ enum gfx_ctx_api win32_api                = GFX_CTX_NONE;
 static dylib_t          dll_handle        = NULL; /* Handle to OpenGL32.dll/libGLESv2.dll */
 #endif
 
+#ifndef __WINRT__
+#include "../common/win_wgl_dxgi.h"
+#endif
+
 typedef struct gfx_ctx_cgl_data
 {
-   void *empty;
+   void *dxgi;
+   unsigned dxgi_dims;
+   bool dxgi_requested;
+   bool dxgi_failed;
+   bool dxgi_fp16;
 } gfx_ctx_wgl_data_t;
 
 /* FORWARD DECLARATIONS */
@@ -523,6 +531,52 @@ static void gfx_ctx_wgl_swap_buffers(void *data)
    switch (win32_api)
    {
       case GFX_CTX_OPENGL_API:
+#ifndef __WINRT__
+         {
+            gfx_ctx_wgl_data_t *wgl = (gfx_ctx_wgl_data_t *)data;
+            RECT rect;
+            if (wgl && wgl->dxgi_requested && !wgl->dxgi_failed
+                  && GetClientRect(win32_get_window(), &rect)
+                  && rect.right > 0 && rect.bottom > 0
+                  && !IsIconic(win32_get_window()))
+            {
+               unsigned dims = VIDEO_SCALE_PACK(rect.right, rect.bottom);
+               bool fp16 = win32_backbuffer_is_scrgb();
+               if (wgl->dxgi && (wgl->dxgi_dims != dims || wgl->dxgi_fp16 != fp16))
+               {
+                  if (ra_wgl_dxgi_resize((ra_wgl_dxgi_t *)wgl->dxgi,
+                           rect.right, rect.bottom, fp16 ? 10 : 28,
+                           fp16 ? 0x881A : 0x8058))
+                  {
+                     wgl->dxgi_dims = dims;
+                     wgl->dxgi_fp16 = fp16;
+                  }
+                  else
+                  {
+                     ra_wgl_dxgi_destroy((ra_wgl_dxgi_t *)wgl->dxgi);
+                     wgl->dxgi = NULL;
+                  }
+               }
+               if (!wgl->dxgi)
+               {
+                  wgl->dxgi = ra_wgl_dxgi_create(win32_get_window(),
+                        rect.right, rect.bottom, fp16 ? 10 : 28,
+                        fp16 ? 0x881A : 0x8058);
+                  wgl->dxgi_dims = dims;
+                  wgl->dxgi_fp16 = fp16;
+                  if (wgl->dxgi)
+                     RARCH_LOG("[WGL] DXGI presentation active.\n");
+               }
+               if (wgl->dxgi && ra_wgl_dxgi_present((ra_wgl_dxgi_t *)wgl->dxgi,
+                        win32_interval > 0 ? (unsigned)win32_interval : 0) != 0)
+                  return;
+               ra_wgl_dxgi_destroy((ra_wgl_dxgi_t *)wgl->dxgi);
+               wgl->dxgi = NULL;
+               wgl->dxgi_failed = true;
+               RARCH_WARN("[WGL] DXGI presentation unavailable; using native presentation.\n");
+            }
+         }
+#endif
          /* gdi32's SwapBuffers only locates and forwards to this, and
           * re-resolves it on every call. See the commit message. */
          wglSwapBuffers(win32_hdc);
@@ -557,6 +611,14 @@ static void gfx_ctx_wgl_destroy(void *data)
          {
             uint32_t video_st_flags;
             video_driver_state_t *video_st = video_state_get_ptr();
+#ifndef __WINRT__
+            if (wgl && wgl->dxgi)
+            {
+               wglMakeCurrent(win32_hdc, win32_hrc);
+               ra_wgl_dxgi_destroy((ra_wgl_dxgi_t *)wgl->dxgi);
+               wgl->dxgi = NULL;
+            }
+#endif
             gl_finish();
             wglMakeCurrent(NULL, NULL);
 
@@ -643,6 +705,8 @@ static void *gfx_ctx_wgl_init(void *video_driver)
    if (!wgl)
       return NULL;
 
+   wgl->dxgi_requested = settings->bools.video_dxgi_present;
+
    if (win32_flags & WIN32_CMN_FLAG_INITED)
       gfx_ctx_wgl_destroy(NULL);
 
@@ -663,6 +727,7 @@ static void *gfx_ctx_wgl_init(void *video_driver)
     * family says what creating the window sets up */
    wndclass.lpfnWndProc = win32_window_proc;
    win32_window_proc_setup(WIN32_WINDOW_WGL);
+   win32_window_tag_presentation(wgl->dxgi_requested);
 
    if (!win32_window_init(&wndclass, true, NULL))
    {
@@ -687,14 +752,9 @@ static bool gfx_ctx_wgl_set_video_mode(void *data,
       bool fullscreen)
 {
 #ifndef __WINRT__
-   /* With a window already up this is a fullscreen toggle on it: the
-    * window is restyled where it stands, and the driver sees the new
-    * size through check_window, as for any resize. The context, and
-    * everything made in it, stays. Where that is refused - exclusive
-    * fullscreen - this goes on as it always has. */
-   if (     win32_get_window()
-         && win32_window_set_fullscreen(dims, fullscreen))
-      return true;
+   /* Keep the context on live transitions; let the caller recover failures. */
+   if (win32_get_window())
+      return win32_window_set_fullscreen_exclusive(dims, fullscreen);
 #endif
 
    if (!win32_set_video_mode(NULL, dims, fullscreen))
@@ -713,12 +773,11 @@ static bool gfx_ctx_wgl_set_video_mode(void *data,
 }
 
 static void gfx_ctx_wgl_input_driver(void *data,
-      const char *joypad_name,
-      input_driver_t **input, void **input_data)
+      const char *joypad_name)
 {
    /* no input driver of this driver's own: the frontend starts the
     * one that goes with a Windows window */
-   input_driver_left_to_frontend(INPUT_WINDOW_WINDOWS, input, input_data);
+   input_driver_video_window(INPUT_WINDOW_WINDOWS, NULL);
 }
 
 static enum gfx_ctx_api gfx_ctx_wgl_get_api(void *data) { return win32_api; }
@@ -808,7 +867,11 @@ static uint32_t gfx_ctx_wgl_get_flags(void *data)
          /* a borderless fullscreen toggle restyles the window; see
           * gfx_ctx_wgl_set_video_mode() */
          if (win32_fullscreen_in_place())
+         {
             BIT32_SET(flags, GFX_CTX_FLAGS_FULLSCREEN_IN_PLACE);
+            BIT32_SET(flags, GFX_CTX_FLAGS_WINDOW_RESIZE_IN_PLACE);
+            BIT32_SET(flags, GFX_CTX_FLAGS_FULLSCREEN_EXCLUSIVE_IN_PLACE);
+         }
 #endif
 
          if (wgl_flags & WGL_FLAG_CORE_HW_CTX_ENABLE)
@@ -932,11 +995,13 @@ void win32_setup_pixel_format(HDC hdc, bool supports_gl) { }
  * context does not see; always presentable, as it was before. */
 static bool gfx_ctx_wgl_presentable(void *data)
 {
-   (void)data;
 #ifdef __WINRT__
+   (void)data;
    return true;
 #else
-   return !IsIconic(win32_get_window());
+   gfx_ctx_wgl_data_t *wgl = (gfx_ctx_wgl_data_t *)data;
+   return !IsIconic(win32_get_window())
+      && (!wgl || !wgl->dxgi || ra_wgl_dxgi_presentable((ra_wgl_dxgi_t *)wgl->dxgi));
 #endif
 }
 

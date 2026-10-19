@@ -319,6 +319,30 @@ static void rmp4_store_fourcc(char *dst, size_t cap, uint32_t fourcc)
 /* First sample entry of the stsd box. Fills the codec fields of the
  * track.  Unknown codecs still record their fourcc so callers can see
  * what was skipped. */
+static void rmp4_parse_mastering(const rmp4_box *box,
+      video_mastering_display_t *out)
+{
+   static const unsigned order[8] = { 2, 3, 4, 5, 0, 1, 6, 7 };
+   video_mastering_display_t m;
+   unsigned i;
+   if (box->size != 24)
+      return;
+   memset(&m, 0, sizeof(m));
+   for (i = 0; i < 8; i++)
+   {
+      unsigned value = rmp4_be16(box->body + i * 2);
+      if (value > 50000)
+         return;
+      m.chromaticity[order[i]] = (uint16_t)value;
+   }
+   m.luminance_max = rmp4_be32(box->body + 16);
+   m.luminance_min = rmp4_be32(box->body + 20);
+   if (m.luminance_min > m.luminance_max)
+      return;
+   m.present = VIDEO_MASTERING_DISPLAY_COMPLETE;
+   *out = m;
+}
+
 static void rmp4_parse_stsd(rmp4_itrack *t, const uint8_t *p, uint64_t size)
 {
    uint64_t next;
@@ -344,7 +368,16 @@ static void rmp4_parse_stsd(rmp4_itrack *t, const uint8_t *p, uint64_t size)
        * followed by primaries, transfer and matrix as 16-bit values. */
       if (e.size > 78)
       {
-         rmp4_box colr;
+         rmp4_box colr, hdr;
+         if (rmp4_find_child(e.body + 78, e.size - 78,
+               RMP4_FOURCC('m','d','c','v'), &hdr))
+            rmp4_parse_mastering(&hdr, &t->pub.mastering);
+         if (rmp4_find_child(e.body + 78, e.size - 78,
+               RMP4_FOURCC('c','l','l','i'), &hdr) && hdr.size == 4)
+         {
+            t->pub.max_cll = rmp4_be16(hdr.body);
+            t->pub.max_fall = rmp4_be16(hdr.body + 2);
+         }
          if (rmp4_find_child(e.body + 78, e.size - 78,
                RMP4_FOURCC('c','o','l','r'), &colr) && colr.size >= 10)
          {
@@ -352,10 +385,15 @@ static void rmp4_parse_stsd(rmp4_itrack *t, const uint8_t *p, uint64_t size)
             if (ct == RMP4_FOURCC('n','c','l','x')
                   || ct == RMP4_FOURCC('n','c','l','c'))
             {
+               t->pub.color_description_present = 1;
+               t->pub.color_primaries = rmp4_be16(colr.body + 4);
                t->pub.transfer_characteristics = rmp4_be16(colr.body + 6);
                t->pub.matrix_coefficients      = rmp4_be16(colr.body + 8);
                if (ct == RMP4_FOURCC('n','c','l','x') && colr.size >= 11)
+               {
+                  t->pub.range_present = 1;
                   t->pub.full_range = (colr.body[10] >> 7) & 1;
+               }
             }
          }
       }
@@ -367,6 +405,19 @@ static void rmp4_parse_stsd(rmp4_itrack *t, const uint8_t *p, uint64_t size)
          case RMP4_FOURCC('v','p','0','9'):
             t->pub.codec = RMP4_CODEC_VP9;
             break;
+         case RMP4_FOURCC('a','v','0','1'):
+         {
+            rmp4_box av1c;
+            if (e.size > 78
+                  && rmp4_find_child(e.body + 78, e.size - 78,
+                     RMP4_FOURCC('a','v','1','C'), &av1c))
+            {
+               t->pub.codec = RMP4_CODEC_AV1;
+               t->pub.codec_private = av1c.body;
+               t->pub.codec_private_size = (size_t)av1c.size;
+            }
+            break;
+         }
          case RMP4_FOURCC('a','v','c','1'):
          case RMP4_FOURCC('a','v','c','3'):
          {
@@ -956,6 +1007,14 @@ static void rmp4_parse_traf(rmp4_t *m, const uint8_t *body, uint64_t size,
             first_flags = rmp4_be32(b.body + off); off += 4;
             have_first  = 1;
          }
+         /* No per-sample fields: n samples of the default size. Of
+          * no size, there is nothing to append, only their time to
+          * pass - and n is the file's to choose, up to 2^32-1. */
+         if (!(f & 0x000F00) && !dflt_size)
+         {
+            t->frag_dts += (uint64_t)n * dflt_dur;
+            n            = 0;
+         }
          for (i = 0; i < n; i++)
          {
             uint32_t dur = dflt_dur, sz = dflt_size, fl = dflt_flags;
@@ -987,9 +1046,16 @@ static void rmp4_parse_traf(rmp4_t *m, const uint8_t *body, uint64_t size,
                fl = first_flags;
             pts = rmp4_ticks_to_ns(
                   (int64_t)t->frag_dts + cts, t->timescale);
-            if (sz && doff + sz <= m->len)
+            if (sz)
+            {
+               /* A fragment can supply a 64-bit base offset. Check the
+                * range before adding, or the end offset can wrap. */
+               if (doff > (uint64_t)m->len
+                     || sz > (uint64_t)m->len - doff)
+                  return;
                rmp4_track_append(t, doff, sz, pts,
                      (uint8_t)!((fl >> 16) & 1));
+            }
             doff        += sz;
             t->frag_dts += dur;
          }
@@ -1291,9 +1357,14 @@ int rmp4_read_packet(rmp4_t *m, rmp4_packet *pkt)
    {
       rmp4_itrack *t = &m->trk[best];
       uint32_t     c = t->cursor;
+      /* Reject a malformed sample table before forming a file pointer. */
+      if (t->off[c] > (uint64_t)m->len
+            || t->size[c] > (uint64_t)m->len - t->off[c])
+         return -1;
       /* Sample bytes not yet in the buffer: consume nothing and let
        * the caller retry once more of the file has been read. */
-      if (t->off[c] + t->size[c] > (uint64_t)m->avail)
+      if (t->off[c] > (uint64_t)m->avail
+            || t->size[c] > (uint64_t)m->avail - t->off[c])
          return RMP4_READ_AGAIN;
       t->cursor++;
       if (t->off[c] + t->size[c] > m->media_max_end)

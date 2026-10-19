@@ -51,6 +51,11 @@
 #ifdef ANDROID
 #include <android/log.h>
 #include <sys/system_properties.h>
+#include <lists/string_list.h>
+#include "../../audio/common/android_audio.h"
+#ifdef HAVE_AAUDIO
+#include "../../audio/audio_driver.h"
+#endif
 #ifdef HAVE_SAF
 #include <vfs/vfs_implementation_saf.h>
 #include "../../menu/menu_cbs.h"
@@ -119,8 +124,6 @@ enum platform_android_flags
    PLAT_ANDROID_FLAG_XPERIA_PLAY_DEVICE  = (1 << 2)
 };
 
-static sthread_tls_t thread_key;
-static bool thread_key_inited            = false;
 static char app_dir[DIR_MAX_LENGTH];
 static char apk_dir[DIR_MAX_LENGTH];
 static char android_config_path[PATH_MAX_LENGTH];
@@ -582,57 +585,11 @@ static void onContentRectChanged(ANativeActivity *activity,
    retro_atomic_store_release_int(&instance->content_rect.changed, 1);
 }
 
+/* Kept as the tree-wide entry point name; the caching, the attach and
+ * the detach-at-thread-exit all live in libretro-common's rjni now. */
 JNIEnv *jni_thread_getenv(void)
 {
-   JNIEnv *env;
-   struct android_app* android_app;
-   int status;
-
-   /* Fast path. A JNIEnv is valid for the entire lifetime of the thread
-    * it was handed to, and this is called on only two threads (the app
-    * thread and, via the activity callbacks, the Java UI thread), so the
-    * cached pointer answers virtually every call.
-    *
-    * AttachCurrentThread on an already-attached thread is not free: it
-    * still crosses into the VM to look the thread up. The TLS slot was
-    * already being written below but never read back, so every one of
-    * the ~25 call sites - including the per-keystroke KeyCharacterMap
-    * lookup - paid for an attach it did not need. */
-   if (thread_key_inited)
-      if ((env = (JNIEnv*)sthread_tls_get(&thread_key)))
-         return env;
-
-   android_app = (struct android_app*)g_android;
-   status      = (*android_app->activity->vm)->
-      AttachCurrentThread(android_app->activity->vm, &env, 0);
-
-   if (status < 0)
-   {
-      RARCH_ERR("jni_thread_getenv: Failed to attach current thread.\n");
-      return NULL;
-   }
-
-   /* Without a key there is nowhere to cache, and jni_thread_destruct
-    * will never run to detach - but the env is still usable, so return
-    * it rather than failing the call. */
-   if (thread_key_inited)
-      sthread_tls_set(&thread_key, (void*)env);
-
-   return env;
-}
-
-static void jni_thread_destruct(void *value)
-{
-   JNIEnv *env = (JNIEnv*)value;
-   struct android_app *android_app = (struct android_app*)g_android;
-
-   if (!env)
-      return;
-
-   if (android_app)
-      (*android_app->activity->vm)->
-         DetachCurrentThread(android_app->activity->vm);
-   sthread_tls_set(&thread_key, NULL);
+   return rjni_env();
 }
 
 static void android_app_entry(void *data)
@@ -816,10 +773,7 @@ void ANativeActivity_onCreate(ANativeActivity* activity,
    ANativeActivity_setWindowFlags(activity, AWINDOW_FLAG_KEEP_SCREEN_ON
          | AWINDOW_FLAG_FULLSCREEN, 0);
 
-   if (sthread_tls_create_with_dtor(&thread_key, jni_thread_destruct))
-      thread_key_inited = true;
-   else
-      RARCH_ERR("Error initializing thread-local storage key.\n");
+   rjni_set_vm(activity->vm);
 
    activity->instance = android_app_create(activity,
          savedState, savedStateSize);
@@ -884,6 +838,214 @@ void frontend_android_get_version_sdk(int32_t *sdk)
    *sdk = 0;
    if (os_version_str[0])
       *sdk = (int32_t)strtol(os_version_str, NULL, 10);
+}
+
+static const char *android_audio_device_type(jint type)
+{
+   switch (type)
+   {
+      case 1:  return "earpiece";
+      case 2:  return "speaker";
+      case 3:  return "wired headset";
+      case 4:  return "wired headphones";
+      case 5:  return "analog line";
+      case 6:  return "digital line";
+      case 7:  return "Bluetooth SCO";
+      case 8:  return "Bluetooth A2DP";
+      case 9:  return "HDMI";
+      case 10: return "HDMI ARC";
+      case 11: return "USB device";
+      case 12: return "USB accessory";
+      case 13: return "dock";
+      case 21: return "bus";
+      case 22: return "USB headset";
+      case 23: return "hearing aid";
+      case 26: return "BLE headset";
+      case 27: return "BLE speaker";
+      case 29: return "HDMI eARC";
+      case 30: return "BLE broadcast";
+      default: break;
+   }
+   return NULL;
+}
+
+/* The largest entry of an int[] from Java; 0 when it is empty. With
+ * find, whether find is among them instead (1 or 0). */
+static jint android_int_array_scan(JNIEnv *env, jobject arr, jint find,
+      bool want_find)
+{
+   jsize n, k;
+   jint best = 0;
+   jint *v;
+   if (!arr)
+      return 0;
+   n = (*env)->GetArrayLength(env, (jintArray)arr);
+   if (n <= 0 || !(v = (*env)->GetIntArrayElements(env, (jintArray)arr, NULL)))
+      return 0;
+   for (k = 0; k < n; k++)
+   {
+      if (want_find && v[k] == find)
+         best = 1;
+      else if (!want_find && v[k] > best)
+         best = v[k];
+   }
+   (*env)->ReleaseIntArrayElements(env, (jintArray)arr, v, JNI_ABORT);
+   return best;
+}
+
+/* Walks AudioManager's outputs: appends each to list where one is
+ * given, and fills the caps of the output with want_id where that is
+ * not zero. True when that output was found. */
+static bool android_audio_outputs_walk(struct string_list *list,
+      int32_t want_id, unsigned *max_channels, bool *ac3)
+{
+   union string_list_elem_attr attr;
+   jclass ctx_class, am_class, dev_class = NULL;
+   jmethodID get_service, get_devices;
+   jmethodID get_id = NULL, get_type = NULL, get_name = NULL, to_string = NULL;
+   jmethodID get_counts = NULL, get_encodings = NULL;
+   jobject am, devices;
+   jstring svc;
+   jsize i, count;
+   bool found  = false;
+   JNIEnv *env = jni_thread_getenv();
+
+   if (!env || !g_android || !g_android->activity)
+      return false;
+   if ((*env)->PushLocalFrame(env, 16) != 0)
+   {
+      JNI_EXCEPTION(env);
+      return false;
+   }
+   attr.i = 0;
+
+   svc = (*env)->NewStringUTF(env, "audio");
+   GET_OBJECT_CLASS(env, ctx_class, g_android->activity->clazz);
+   if (!svc || !ctx_class)
+      goto done;
+   GET_METHOD_ID(env, get_service, ctx_class, "getSystemService",
+         "(Ljava/lang/String;)Ljava/lang/Object;");
+   if (!get_service)
+      goto done;
+   CALL_OBJ_METHOD_PARAM(env, am, g_android->activity->clazz,
+         get_service, svc);
+   if (!am)
+      goto done;
+   GET_OBJECT_CLASS(env, am_class, am);
+   if (!am_class)
+      goto done;
+   GET_METHOD_ID(env, get_devices, am_class, "getDevices",
+         "(I)[Landroid/media/AudioDeviceInfo;");
+   if (!get_devices)
+      goto done;
+   /* AudioManager.GET_DEVICES_OUTPUTS */
+   CALL_OBJ_METHOD_PARAM(env, devices, am, get_devices, (jint)2);
+   if (!devices)
+      goto done;
+
+   count = (*env)->GetArrayLength(env, (jobjectArray)devices);
+   for (i = 0; i < count && !found; i++)
+   {
+      jobject dev;
+      jint     id   = 0;
+      jint     type = 0;
+
+      if ((*env)->PushLocalFrame(env, 8) != 0)
+      {
+         JNI_EXCEPTION(env);
+         break;
+      }
+      dev = (*env)->GetObjectArrayElement(env, (jobjectArray)devices, i);
+      JNI_EXCEPTION(env);
+      if (dev && !dev_class)
+      {
+         jclass obj_class;
+         /* Popped with the frame below; the IDs outlive it. */
+         GET_OBJECT_CLASS(env, dev_class, dev);
+         FIND_CLASS(env, obj_class, "java/lang/Object");
+         if (dev_class)
+         {
+            GET_METHOD_ID(env, get_id,        dev_class, "getId", "()I");
+            GET_METHOD_ID(env, get_type,      dev_class, "getType", "()I");
+            GET_METHOD_ID(env, get_name,      dev_class, "getProductName",
+                  "()Ljava/lang/CharSequence;");
+            GET_METHOD_ID(env, get_counts,    dev_class, "getChannelCounts", "()[I");
+            GET_METHOD_ID(env, get_encodings, dev_class, "getEncodings", "()[I");
+         }
+         if (obj_class)
+            GET_METHOD_ID(env, to_string, obj_class, "toString",
+                  "()Ljava/lang/String;");
+      }
+      if (!dev || !get_id || !get_type)
+      {
+         (*env)->PopLocalFrame(env, NULL);
+         continue;
+      }
+      CALL_INT_METHOD(env, id, dev, get_id);
+      CALL_INT_METHOD(env, type, dev, get_type);
+
+      if (want_id && id == want_id)
+      {
+         jobject counts = NULL, encodings = NULL;
+         found = true;
+         if (get_counts)
+            CALL_OBJ_METHOD(env, counts, dev, get_counts);
+         if (get_encodings)
+            CALL_OBJ_METHOD(env, encodings, dev, get_encodings);
+         if (max_channels)
+            *max_channels = (unsigned)android_int_array_scan(env, counts, 0, false);
+         /* AudioFormat.ENCODING_AC3 */
+         if (ac3)
+            *ac3 = android_int_array_scan(env, encodings, 5, true) != 0;
+      }
+
+      /* Telephony and remote submix are not places to play to. */
+      if (list && get_name && to_string && id > 0 && type != 18 && type != 25)
+      {
+         char entry[256];
+         const char *name = NULL;
+         const char *kind = android_audio_device_type(type);
+         jobject cs  = NULL;
+         jstring str = NULL;
+         CALL_OBJ_METHOD(env, cs, dev, get_name);
+         if (cs)
+            CALL_OBJ_METHOD(env, str, cs, to_string);
+         if (str)
+            name = (*env)->GetStringUTFChars(env, str, NULL);
+         if (kind)
+            snprintf(entry, sizeof(entry), "%d (%s, %s)", (int)id,
+                  (name && *name) ? name : "Unknown", kind);
+         else
+            snprintf(entry, sizeof(entry), "%d (%s)", (int)id,
+                  (name && *name) ? name : "Unknown");
+         if (name)
+            (*env)->ReleaseStringUTFChars(env, str, name);
+         string_list_append(list, entry, attr);
+      }
+      (*env)->PopLocalFrame(env, NULL);
+   }
+
+done:
+   (*env)->PopLocalFrame(env, NULL);
+   return found;
+}
+
+struct string_list *frontend_android_audio_outputs_new(void)
+{
+   struct string_list *list = string_list_new();
+   if (list)
+      android_audio_outputs_walk(list, 0, NULL, NULL);
+   return list;
+}
+
+bool frontend_android_audio_device_caps(int32_t id,
+      unsigned *max_channels, bool *ac3)
+{
+   *max_channels = 0;
+   *ac3          = false;
+   if (id <= 0)
+      return false;
+   return android_audio_outputs_walk(NULL, id, max_channels, ac3);
 }
 
 static bool device_is_xperia_play(const char *name)
@@ -1736,9 +1898,11 @@ static void check_proc_acpi_battery(const char * node, bool * have_battery,
       }
       else if (string_is_equal(key, "remaining capacity"))
       {
+         /* "<number> mAh": parse, then check what follows */
          char *endptr = NULL;
-         if (endptr && *endptr == ' ')
-            remaining = (int)strtol(val, &endptr, 10);
+         long  _val   = strtol(val, &endptr, 10);
+         if (endptr != val && *endptr == ' ')
+            remaining = (int)_val;
       }
    }
 
@@ -1746,14 +1910,17 @@ static void check_proc_acpi_battery(const char * node, bool * have_battery,
 
    while (make_proc_acpi_key_val(&ptr, &key, &val))
    {
-      char      *endptr = NULL;
-
       if (string_is_equal(key, "design capacity"))
-         if (endptr && *endptr == ' ')
-            maximum = (int)strtol(val, &endptr, 10);
+      {
+         char *endptr = NULL;
+         long  _val   = strtol(val, &endptr, 10);
+         if (endptr != val && *endptr == ' ')
+            maximum = (int)_val;
+      }
    }
 
-   if ((maximum >= 0) && (remaining >= 0))
+   /* maximum is the divisor */
+   if ((maximum > 0) && (remaining >= 0))
    {
       pct = (int) ((((float) remaining) / ((float) maximum)) * 100.0f);
       if (pct < 0)
@@ -3384,6 +3551,16 @@ static void frontend_unix_init(void *data)
    if (!android_app)
       return;
 
+#ifdef HAVE_AAUDIO
+   /* AAudio is Android 8.0 (API 26) and up. */
+   {
+      int32_t sdk = 0;
+      frontend_android_get_version_sdk(&sdk);
+      if (sdk < 26)
+         audio_driver_list_remove(&audio_aaudio);
+   }
+#endif
+
    android_app->config             = AConfiguration_new();
    AConfiguration_fromAssetManager(android_app->config,
          android_app->activity->assetManager);
@@ -3414,7 +3591,8 @@ static void frontend_unix_init(void *data)
     * the Java side has resolved the runtime permission state.  The
     * wait pumps lifecycle commands, so a pause or rotation while a
     * permission dialog is up cannot block the UI thread's
-    * synchronized window teardown (ANR).  A launch with the
+    * synchronized window teardown (ANR).  Settings may remove the
+    * window, so wait for its replacement as well.  A launch with the
     * permission already settled signals before this loop is reached
     * and never waits. */
    for (;;)
@@ -3423,7 +3601,7 @@ static void frontend_unix_init(void *data)
 
       resolved = (android_lifecycle_flags(&android_app->lc)
             & ANDROID_LC_PERM_RESOLVED) != 0;
-      if (resolved)
+      if (resolved && android_app_window(android_app))
          break;
 
       if (!android_run_events(android_app))
@@ -3476,6 +3654,8 @@ static void frontend_unix_init(void *data)
          "getUserLanguageString", "()Ljava/lang/String;");
    GET_METHOD_ID(env, android_app->isPlayStoreBuild, class,
          "isPlayStoreBuild", "()Z");
+   GET_METHOD_ID(env, android_app->isMetaQuestBuild, class,
+         "isMetaQuestBuild", "()Z");
    GET_METHOD_ID(env, android_app->getAvailableCores, class,
          "getAvailableCores", "()[Ljava/lang/String;");
    GET_METHOD_ID(env, android_app->getInstalledCores, class,
@@ -3503,7 +3683,8 @@ static void frontend_unix_init(void *data)
 
    CALL_BOOLEAN_METHOD(env, android_app->is_play_store_build,
          android_app->activity->clazz, android_app->isPlayStoreBuild);
-
+   CALL_BOOLEAN_METHOD(env, android_app->is_meta_quest_build,
+         android_app->activity->clazz, android_app->isMetaQuestBuild);
 #ifdef HAVE_SAF
    GET_METHOD_ID(env, android_app->requestOpenDocumentTree, class,
          "requestOpenDocumentTree", "()V");
@@ -3973,7 +4154,11 @@ static void frontend_unix_sighandler(int sig)
       retroarch_ctl(RARCH_CTL_SET_SHUTDOWN, NULL);
 #endif
    }
-   if (quit == 2) exit(1);
+   /* _exit, not exit: exit() runs atexit handlers and frees memory,
+    * which deadlocks on the allocator's lock when this signal lands
+    * inside free() - as it does during a slow shutdown, the very case
+    * a second Ctrl+C is meant to force. */
+   if (quit == 2) _exit(1);
    /* in case there's a second deadlock in a C++ destructor or something */
    if (quit >= 3) abort();
 }

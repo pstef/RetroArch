@@ -893,6 +893,7 @@ static const struct
    char s_56e1b336[20];
    char s_313d15c0[9];
    char s_e9f0dd82[46];
+   char s_0bd714f7[5];
    char s_0bebb490[11];
    char s_72765a06[16];
    char s_72765a07[16];
@@ -1236,7 +1237,6 @@ static const struct
    char s_d02afc79[32];
    char s_7a2033d4[20];
    char s_a6e5d0ee[23];
-   char s_f228c6c5[16];
    char s_645ae416[25];
    char s_df92f5b5[41];
    char s_dcbf8b04[25];
@@ -1786,6 +1786,18 @@ static const struct
    char s_4ceac87e[7];
    char s_f62d1074[8];
    char s_387a4176[18];
+   char s_131e934d[6];
+   char s_7745a38e[7];
+   char s_49e4b96c[9];
+   char s_2102d995[9];
+   char s_e69d6a8f[8];
+   char s_4e2cbad9[6];
+   char s_4e2cbb07[6];
+   char s_13ef7ee0[6];
+   char s_863f74bc[5];
+   char s_b28f6db3[9];
+   char s_6c9436e3[8];
+   char s_64ee333c[9];
    char s_28863bc1[18];
    char s_f751c497[21];
    char s_9329c64c[12];
@@ -1846,7 +1858,6 @@ static const struct
    char s_ccfe26d1[15];
    char s_728ca1d3[8];
    char s_5f612db6[19];
-   char s_9f29f708[27];
    char s_a9145c83[12];
    char s_22f52844[12];
    char s_b46ad5d0[10];
@@ -2313,6 +2324,8 @@ static const struct
    char s_4b582a0c[38];
    char s_61213f1d[21];
    char s_95e4b29f[71];
+   char s_60258de0[7];
+   char s_34b2592a[12];
    char s_57665cff[7];
    char s_0e2c0fca[44];
    char s_93ac5ec8[42];
@@ -2559,7 +2572,6 @@ static const struct
    char s_f46c7b83_1[124];
    char s_cb67f2a4[32];
    char s_3c3598a9[53];
-   char s_3bac47bd[446];
    char s_90e7db40[463];
    char s_b07cd572_0[499];
    char s_b07cd572_1[46];
@@ -2917,7 +2929,6 @@ static const struct
    char s_74d87c7a[47];
    char s_12adb1e7[46];
    char s_070529d4[77];
-   char s_30d1fc05[42];
 #ifdef GEKKO
    char s_3180dcf5[65];
 #endif
@@ -2959,7 +2970,6 @@ static const struct
    char s_47df0525[64];
    char s_03e272fc[57];
    char s_5c2cc60f[86];
-   char s_d6d8d4be[86];
    char s_e86d2704[75];
    char s_dda608b5[335];
    char s_6f5a032a[68];
@@ -3105,7 +3115,6 @@ static const struct
 #endif
 #endif
    char s_acca011c[107];
-   char s_01efec73[45];
    char s_d3fc9970[52];
    char s_740bd7c4[54];
    char s_f052dae3[73];
@@ -3411,7 +3420,6 @@ static const struct
    char s_c7c09eb0[106];
    char s_7d4adfaf[34];
    char s_6f122164[66];
-   char s_61942cf6[74];
    char s_6b7e9271[124];
    char s_68b6e245[68];
    char s_3bb4fbf9[133];
@@ -4058,6 +4066,7 @@ static const struct
    char s_543fcabd[16];
    char s_59212b5f[14];
    char s_f26b6cff[39];
+   char s_a63c824a[13];
    char s_a9f3b2c3[23];
    char s_0e7aca8a[24];
    char s_ab1afe7c[22];
@@ -5462,6 +5471,7 @@ static const struct
    "Bot\303\263n Y (esquerda)",
    "Chave %s",
    "Tipo de asignaci\303\263n do controlador de teclado",
+   "Todo",
    "Teclado %s",
    "Arma Auxiliar A",
    "Arma Auxiliar B",
@@ -5805,7 +5815,6 @@ static const struct
    "Mostrar \"Descargador principal\"",
    "Mostrar \"Dump Disc\"",
    "Amosar rutas completas",
-   "Mostrar \"Axuda\"",
    "Mostrar \"Cargar contido\"",
    "Notificaci\303\263n de inicio \"Cargar contido\"",
    "Mostrar \"Cargar n\303\272cleo\"",
@@ -6366,6 +6375,18 @@ static const struct
    "Editor",
    "Rexi\303\263n",
    "Mes de Lanzamento",
+   "Abril",
+   "Agosto",
+   "Decembro",
+   "Febreiro",
+   "Xaneiro",
+   "Xullo",
+   "Xu\303\261o",
+   "Marzo",
+   "Maio",
+   "Novembro",
+   "Outubro",
+   "Setembro",
    "Ano de lanzamento",
    "Vibraci\303\263n soportada",
    "Puntuaci\303\263n",
@@ -6426,7 +6447,6 @@ static const struct
    "Escala enteira",
    "Apagado",
    "Directorio inicial",
-   "Ficheiro de configuraci\303\263n",
    "Cor do tema",
    "Apple Verde",
    "Brogramas",
@@ -6895,6 +6915,8 @@ static const struct
    "Posici\303\263n de notificaci\303\263n (vertical)",
    "\303\215ndice de monitores",
    "Activa a pantalla completa sobre o notch en dispositivos Android e iOS",
+   "Sempre",
+   "Desactivado",
    "Sa\303\255da",
    "Correcci\303\263n de sobreexploraci\303\263n (inferior)",
    "Correcci\303\263n de sobreexploraci\303\263n (arriba)",
@@ -7214,11 +7236,6 @@ static const struct
    "\303\263n mostra a frecuencia como \302\253Receptor\302\273.",
    "Sincronizar audio. Recomendado.",
    "Acalar a configuraci\303\263n de sincronizaci\303\263n de audio.",
-   "Remostrar, filtrar e mesturar o son no f\303\255o de son en troques de facelo dentro de cada fot"
-   "ograma. Ten a mesma latencia co fluxo sincronizado cos fotogramas con calquera valor de Latencia"
-   " de son, cun control da frecuencia medido ao ritmo propio do dispositivo e co remostreador f\303"
-   "\263ra do orzamento temporal dos fotogramas. Os controladores de son que non poden espertar segu"
-   "ndo o ritmo do dispositivo mante\303\261en o fluxo sincronizado cos fotogramas.",
    "Solicitar ao sistema operativo que planifique o f\303\255o de son por diante do resto do fronten"
    "d, para cun fotograma ocupado te\303\261a menos posibilidades de deixar sen servizo o dispositiv"
    "o de son. Permite reducir \302\253Latencia de son\302\273 nos sistemas co permiten; se o sistema"
@@ -7760,7 +7777,6 @@ static const struct
    "Dimin\303\272e o nivel de volume de audio de sa\303\255da.",
    "Aumenta o nivel de volume de audio de sa\303\255da.",
    "Activa/desactiva a sincronizaci\303\263n coa taxa de fotogramas de contido exacta.",
-   "O rato f\303\255sico reco\303\261ecido por RetroArch.",
 #ifdef GEKKO
    "Axusta a escala x/y para a velocidade da pistola de luz Wiimote.",
 #endif
@@ -7828,7 +7844,6 @@ static const struct
    "Combinaci\303\263n de bot\303\263ns do controlador para sa\303\255r de RetroArch.",
    "Neste directorio g\303\241rdanse as reasignaci\303\263ns de entrada.",
    "Anular os enlaces de entrada cos enlaces reasignados definidos para o n\303\272cleo actual.",
-   "Especifica que porto principal recibir\303\241 entrada do porto do controlador frontend %u.",
    "As reasignaci\303\263ns s\303\263 se aplicar\303\241n ao mando activo no que foron gardadas.",
    "Cambia como se asigna o RetroPad virtual a un dispositivo de entrada f\303\255sico. Se un dispos"
    "itivo de entrada se reco\303\261ece e se configura automaticamente correctamente, probablemente "
@@ -8065,7 +8080,6 @@ static const struct
 #endif
    "Amosa as rutas completas na configuraci\303\263n de directorios, en lugar de s\303\263 o nome do"
    " directorio escollido.",
-   "Mostra a opci\303\263n \"Axuda\" no men\303\272 principal.",
    "Mostra a opci\303\263n \"Informaci\303\263n\" no men\303\272 principal.",
    "Mostra a opci\303\263n \"Cargar contido\" no men\303\272 principal.",
    "Mostra unha breve animaci\303\263n de comentarios de inicio ao cargar contido.",
@@ -8541,7 +8555,6 @@ static const struct
    "cidade de rebobinado.",
    "Cambiar os axustes de rebobinado.",
    "Establecer o directorio de inicio para o explorador de ficheiros.",
-   "O ficheiro de configuraci\303\263n predeterminado almac\303\251nase neste directorio.",
    "Selecciona un tema de cor diferente. Ao escoller \"Personalizado\" permite o uso de ficheiros pr"
    "edefinidos de temas de men\303\272.",
    "Seleccione un tema de men\303\272 predefinido no Explorador de ficheiros.",
@@ -9453,6 +9466,7 @@ static const struct
    "Tempo de espera",
    "Truco entrada",
    "Introduza o nome do ficheiro de trucos",
+   "Instant\303\241neo",
    "Introducir contrasinal",
    "Contrasinal incorrecto.",
    "Contrasinal correcto.",
@@ -9762,7 +9776,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_gl_blob_check[
-      (sizeof(msg_hash_gl_blob) == (212811u
+      (sizeof(msg_hash_gl_blob) == (212200u
 #ifdef ANDROID
        + 365u
 #endif
@@ -11100,6 +11114,7 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_A,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_AUX_B,
@@ -11443,7 +11458,6 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_UPDATER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_DUMP_DISC,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_FULL_PATHS,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT_ANIMATION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CORE,
@@ -11992,6 +12006,18 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_PUBLISHER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_REGION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_APRIL,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_AUGUST,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_DECEMBER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_FEBRUARY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_JANUARY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_JULY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_JUNE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_MARCH,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_MAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_NOVEMBER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_OCTOBER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_MONTH_SEPTEMBER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RELEASE_YEAR,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_RUMBLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RDB_ENTRY_SCORE,
@@ -12052,7 +12078,6 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_APPLE_GREEN,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME_BROGRAMMER,
@@ -12519,6 +12544,8 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OUTPUT_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_BOTTOM,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_TOP,
@@ -12760,7 +12787,6 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SINK_RATE_ESTIMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SYNC,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SYNCHRONIZATION_SETTINGS,
-   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_THREADED_PIPELINE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_THREAD_PRIORITY,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_TIME_STRETCH,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_TIME_STRETCH_LOWPASS,
@@ -13117,7 +13143,6 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_DOWN,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VOLUME_UP,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_META_VRR_RUNLOOP_TOGGLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_INDEX,
 #ifdef GEKKO
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_MOUSE_SCALE,
 #endif
@@ -13159,7 +13184,6 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_QUIT_GAMEPAD_COMBO,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAPPING_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_BINDS_ENABLE,
-   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_PORT,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RETROPAD_BINDS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_RUMBLE_GAIN,
@@ -13305,7 +13329,6 @@ static const uint32_t msg_hash_gl_ids[] =
 #endif
 #endif
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_FULL_PATHS,
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION,
@@ -13611,7 +13634,6 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_GRANULARITY,
    (uint32_t)MENU_ENUM_SUBLABEL_REWIND_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_SUBLABEL_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_COLOR_THEME,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_MENU_THEME_PRESET,
    (uint32_t)MENU_ENUM_SUBLABEL_RGUI_SHOW_START_SCREEN,
@@ -14257,6 +14279,7 @@ static const uint32_t msg_hash_gl_ids[] =
    (uint32_t)MSG_INPUT_BIND_TIMEOUT,
    (uint32_t)MSG_INPUT_CHEAT,
    (uint32_t)MSG_INPUT_CHEAT_FILENAME,
+   (uint32_t)MSG_INPUT_COMBO_INSTANT,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_NOK,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_OK,

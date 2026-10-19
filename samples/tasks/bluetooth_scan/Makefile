@@ -1,3 +1,5 @@
+include ../../sample_objdir.mk
+
 TARGET := bluetooth_scan_test
 
 RARCH_DIR         := ../../..
@@ -13,12 +15,13 @@ SOURCES := \
 	$(LIBRETRO_COMM_DIR)/rthreads/rthreads.c \
 	$(LIBRETRO_COMM_DIR)/features/features_cpu.c
 
-OBJS := $(SOURCES:.c=.o)
+OBJS := $(call sample_objs,$(SOURCES:.c=.o))
 
-CFLAGS  += -Wall -std=gnu99 -g -O1 -D_GNU_SOURCE -DHAVE_THREADS -DRARCH_INTERNAL \
+CFLAGS  += -Wall -std=gnu99 -g1 -O1 -D_GNU_SOURCE -DHAVE_THREADS -DRARCH_INTERNAL \
            -DBLUETOOTH_SCAN_WINDOW_US=300000 \
            -I$(RARCH_DIR) -I$(LIBRETRO_COMM_DIR)/include
-LDFLAGS += -lpthread -lm
+# --wrap=task_get_flags so the test can count the scan's passes.
+LDFLAGS += -Wl,--wrap=task_get_flags -lpthread -lm
 
 ifneq ($(SANITIZER),)
    CFLAGS  := -fsanitize=$(SANITIZER) -fno-omit-frame-pointer $(CFLAGS)
@@ -34,6 +37,10 @@ all: $(TARGET)
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
 
+$(SAMPLE_OBJDIR)/%.o: $$(call sample_src,$$*).c
+	@mkdir -p $(@D)
+	$(CC) -c -o $@ $< $(CFLAGS)
+
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
@@ -41,6 +48,7 @@ check: all
 	./$(TARGET)
 
 clean:
+	rm -rf $(SAMPLE_OBJDIR)
 	rm -f $(TARGET) $(OBJS)
 
 .PHONY: all check clean

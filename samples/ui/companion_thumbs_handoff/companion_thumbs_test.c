@@ -24,11 +24,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <retro_timers.h>
+#endif
 
 #include <boolean.h>
 #include <retro_atomic.h>
 #include <formats/image.h>
 #include <features/features_cpu.h>
+#include <rthreads/rthreads.h>
 
 #include "../../../gfx/gfx_anim_preview.h"
 #include "../../../ui/companion/companion_thumbs.h"
@@ -59,6 +63,29 @@ enum image_type_enum image_texture_get_type(const char *path)
    return IMAGE_TYPE_PNG;
 }
 
+/* A worker that decoded hands back its read pool before it ends:
+ * noted by thread, against the threads that decoded */
+#define MAX_THREADS 16
+static uintptr_t decode_thread[MAX_THREADS], flush_thread[MAX_THREADS];
+static unsigned  decode_threads, flush_threads;
+static slock_t  *thread_lock;
+static void note_thread(uintptr_t *list, unsigned *n)
+{
+   uintptr_t id = sthread_get_current_thread_id();
+   unsigned i;
+   slock_lock(thread_lock);
+   for (i = 0; i < *n; i++)
+      if (list[i] == id)
+         break;
+   if (i == *n && *n < MAX_THREADS)
+      list[(*n)++] = id;
+   slock_unlock(thread_lock);
+}
+void data_transfer_pool_flush(void)
+{
+   note_thread(flush_thread, &flush_threads);
+}
+
 bool image_texture_load_ex(struct texture_image *img, const char *path,
       bool (*should_abort)(void *ud), void *ud)
 {
@@ -76,6 +103,7 @@ bool image_texture_load_ex(struct texture_image *img, const char *path,
    for (i = 0; i < 40 * 30; i++)
       img->pixels[i] = c;
    retro_atomic_fetch_add_int(&still_decodes, 1);
+   note_thread(decode_thread, &decode_threads);
    return true;
 }
 
@@ -132,6 +160,8 @@ gfx_anim_preview_t *gfx_anim_preview_open(const char *path, int png_probe)
    s = (fake_sess_t*)calloc(1, sizeof(*s));
    s->p.dims       = VIDEO_SCALE_PACK(32, 24);
    s->p.loop_count = 0;
+   s->p.stream     = s;
+   s->p.type       = IMAGE_TYPE_WEBM;
    s->id           = anim_id(path);
    retro_atomic_store_release_int(&s->magic, (int)SESS_LIVE);
    retro_atomic_fetch_add_int(&opens[s->id], 1);
@@ -160,6 +190,87 @@ const uint32_t *gfx_anim_preview_next(gfx_anim_preview_t *p,
 void gfx_anim_preview_rewind(gfx_anim_preview_t *p)
 {
    ((fake_sess_t*)p)->frame = 0;
+}
+
+/* The stream behind the session, as video_player plays it: the fake
+ * session is its own stream. */
+const uint32_t *image_transfer_anim_stream_next(void *stream,
+      enum image_type_enum type, int *duration_ms)
+{
+   bool native;
+   (void)type;
+   return gfx_anim_preview_next((gfx_anim_preview_t*)stream, duration_ms,
+         &native);
+}
+bool image_transfer_anim_stream_waiting(const void *stream,
+      enum image_type_enum type)
+{
+   (void)stream; (void)type;
+   return false;
+}
+void image_transfer_anim_stream_rewind(void *stream,
+      enum image_type_enum type)
+{
+   (void)type;
+   gfx_anim_preview_rewind((gfx_anim_preview_t*)stream);
+}
+void image_transfer_anim_stream_get_info(void *stream,
+      enum image_type_enum type, unsigned *width, unsigned *height,
+      int *num_frames, int *loop_count)
+{
+   (void)stream;
+   (void)type;
+   *width      = 32;
+   *height     = 24;
+   *num_frames = FRAMES;
+   *loop_count = 0;
+}
+bool image_transfer_anim_stream_set_argb(void *stream,
+      enum image_type_enum type, int argb)
+{
+   (void)stream; (void)type;
+   return argb != 0;
+}
+bool image_transfer_anim_stream_set_output_stride(void *stream,
+      enum image_type_enum type, uint32_t *out, unsigned stride)
+{
+   (void)stride;
+   (void)stream; (void)type; (void)out;
+   return false;
+}
+void image_transfer_anim_stream_set_catchup(void *stream,
+      enum image_type_enum type, int on)
+{
+   (void)stream; (void)type; (void)on;
+}
+void image_transfer_anim_stream_set_want_fp16(void *stream,
+      enum image_type_enum type, bool want)
+{
+   (void)stream; (void)type; (void)want;
+}
+bool image_transfer_anim_stream_is_fp16(const void *stream,
+      enum image_type_enum type)
+{
+   (void)stream; (void)type;
+   return false;
+}
+bool image_transfer_anim_stream_set_blit_pool(void *stream,
+      enum image_type_enum type, void *pool, unsigned bands)
+{
+   (void)stream; (void)type; (void)pool; (void)bands;
+   return false;
+}
+bool image_transfer_anim_stream_set_hw(void *stream,
+      enum image_type_enum type, bool enable)
+{
+   (void)stream; (void)type; (void)enable;
+   return false;
+}
+bool image_transfer_anim_stream_hw_frame(void *stream,
+      enum image_type_enum type, video_hw_frame_t *out)
+{
+   (void)stream; (void)type; (void)out;
+   return false;
 }
 
 /* Live on the way in and still live on the way out: a close while the
@@ -267,15 +378,31 @@ static void watchdog(int sig)
    _exit(1);
 }
 
+#ifdef _WIN32
+static void watchdog_thread(void *unused)
+{
+   (void)unused;
+   retro_sleep(120000);
+   watchdog(0);
+}
+#endif
+
 int main(void)
 {
    companion_thumbs_t *t;
    sink_t k;
    char path[64];
    unsigned i, round;
-
+#ifdef _WIN32
+   sthread_t *timer = sthread_create(watchdog_thread, NULL);
+   if (!timer)
+      return 1;
+   sthread_detach(timer);
+#else
    signal(SIGALRM, watchdog);
    alarm(120);
+#endif
+   thread_lock = slock_new();
    memset(&k, 0, sizeof(k));
    for (i = 0; i < 8; i++)
       k.last_frame[i] = -1;
@@ -426,6 +553,24 @@ int main(void)
    usleep(5000);
    companion_thumbs_free(t);
    printf("ok    free with decodes and an animation in flight\n");
+   {
+      unsigned i2, j, missing = 0;
+      for (i2 = 0; i2 < decode_threads; i2++)
+      {
+         bool found = false;
+         for (j = 0; j < flush_threads; j++)
+            if (flush_thread[j] == decode_thread[i2])
+               found = true;
+         if (!found)
+            missing++;
+      }
+      CHECK(decode_threads > 0 && !missing,
+            "a worker that decoded ended holding its read pool");
+      if (decode_threads > 0 && !missing)
+         printf("ok    %u decode workers handed back their read pools\n",
+               decode_threads);
+   }
+   slock_free(thread_lock);
 
    if (failures)
    {

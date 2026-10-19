@@ -18,6 +18,7 @@
 #include <features/features_cpu.h>
 #include <retro_timers.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -82,6 +83,7 @@ static void run(const char *path, const char *label, int expect_video)
 
    memset(&th, 0, sizeof(th));
    memset(&hp, 0, sizeof(hp));
+   hp.hdr_output = getenv("HDR_OUTPUT") ? 1 : 0;
    hp.force_preview_audio = getenv("NOAUDIO") ? 0 : 1;
    gfx_thumbnail_reset(&th);
 
@@ -174,6 +176,31 @@ static void run(const char *path, const char *label, int expect_video)
          hp.texture_uploads, hp.fade_pushes, hp.still_loads,
          hp.last_tex_w, hp.last_tex_h);
 
+   /* HDR: with HDR_OUTPUT the stub driver offers half floats, and an
+    * HDR source (HDR_EXPECT: the PQ-tagged flat-grey fixture) must have
+    * its animation uploaded as them, on the PQ EOTF of its 10-bit grey
+    * (luma 600, over 80 nits). Without both, not one frame may be. */
+   if (hp.hdr_output && getenv("HDR_EXPECT"))
+   {
+      unsigned short h = hp.fp16_r;
+      int    e   = (h >> 10) & 0x1f;
+      double r   = (e ? ldexp(1.0 + (h & 0x3ff) / 1024.0, e - 15)
+                      : ldexp((h & 0x3ff) / 1024.0, -14)) * ((h & 0x8000) ? -1 : 1);
+      double ep  = pow(((298 * (600 - 64) + 128) >> 8) / 1023.0, 1.0 / 78.84375);
+      double num = ep - 0.8359375 > 0.0 ? ep - 0.8359375 : 0.0;
+      double ref = 10000.0 * pow(num / (18.8515625 - 18.6875 * ep),
+            1.0 / 0.1593017578125) / 80.0;
+      check(label, "H1 an HDR source animates in half floats",
+            hp.fp16_uploads >= 1);
+      check(label, "H2 its half floats lie on the PQ EOTF",
+            fabs(r - ref) / ref < 0.04);
+      printf("      [hdr] %d half-float frames, centre red %.4f "
+             "(PQ grey %.4f)\n", hp.fp16_uploads, r, ref);
+   }
+   else
+      check(label, "H0 no half floats without an HDR source and output",
+            hp.fp16_uploads == 0);
+
    if (expect_video == 2)
    {
       /* No reservation: whatever the outcome, the file must not be
@@ -259,6 +286,256 @@ static void env_set(const char *name, const char *value)
 #endif
 }
 
+/* Stills asked for during a frame go out at its end, in sets as wide
+ * as the cores, where the task queue is threaded; a cancel before then
+ * sends nothing; an unthreaded queue takes each at once. Every tag
+ * comes back through the thumbnail's landing, which ASan's leak check
+ * holds to. */
+/* The savestate thumbnail path for a playlist entry, with no core
+ * running: built from the entry's name in the savestate folder, over
+ * and over as the menu redraws it. Every call is to leave nothing
+ * behind, which ASan's leak check holds to. */
+extern int stub_playlist_entry_set(const char *savestate_dir,
+      const char *entry_path);
+static void lane_savestate_thumbnail_path(void)
+{
+   int  i;
+   int  wrong = 0;
+   char path[512];
+   int  ok    = stub_playlist_entry_set("/states", "/roms/Some Game.zip");
+
+   check("savestate path", "the playlist entry is laid out", ok);
+   for (i = 0; ok && i < 64; i++)
+   {
+      gfx_savestate_thumbnail_get_path(path, sizeof(path),
+            "ignored", (i & 1) ? 3 : 0);
+      if (strcmp(path, (i & 1)
+               ? "/states/Some Game.state3.png"
+               : "/states/Some Game.state.png"))
+      {
+         if (!wrong++)
+            printf("      savestate thumbnail path: %s\n", path);
+      }
+   }
+   check("savestate path", "built from the entry in the state folder",
+         ok && !wrong);
+   stub_playlist_entry_set(NULL, NULL);
+}
+
+#define SET_STILLS 5
+static void lane_still_sets(void)
+{
+   gfx_thumbnail_path_data_t *pd = gfx_thumbnail_path_init();
+   gfx_thumbnail_t th[SET_STILLS];
+   char names[SET_STILLS][32];
+   unsigned i, width = cpu_features_get_core_amount();
+   int ok;
+
+   if (width > 8)
+      width = 8;
+   printf("still sets (%u cores)\n", width);
+   for (i = 0; i < SET_STILLS; i++)
+   {
+      FILE *f;
+      char full[64];
+      snprintf(names[i], sizeof(names[i]), "gfx_thumb_set_%u.png", i);
+      snprintf(full, sizeof(full), "./%s", names[i]);
+      if ((f = fopen(full, "wb")))
+      {
+         fputs("png", f);
+         fclose(f);
+      }
+      gfx_thumbnail_init_blank(&th[i]);
+   }
+   hp.thumb_cfg      = 1;
+   hp.threaded_queue = 1;
+   hp.still_loads    = hp.still_sets = hp.set_items = hp.set_max = 0;
+
+   for (i = 0; i < SET_STILLS; i++)
+   {
+      gfx_thumbnail_set_content_image(pd, ".", names[i]);
+      gfx_thumbnail_request(pd, GFX_THUMBNAIL_RIGHT, NULL, 0, &th[i],
+            0, false);
+   }
+   ok = 1;
+   for (i = 0; i < SET_STILLS; i++)
+      if (th[i].status != GFX_THUMBNAIL_STATUS_PENDING)
+         ok = 0;
+   check("sets", "requests wait for the frame's end", ok
+         && hp.still_loads == 0 && hp.still_sets == 0);
+   gfx_thumbnail_flush_requests();
+   if (width > 1)
+      check("sets", "the frame's stills go out in sets of the cores",
+            hp.set_items + hp.still_loads == SET_STILLS
+            && hp.set_max == (int)(width < SET_STILLS ? width : SET_STILLS)
+            && hp.still_sets == (int)(SET_STILLS / width
+               + (SET_STILLS % width > 1))
+            && hp.still_loads == (int)(SET_STILLS % width == 1));
+   else
+      check("sets", "one core: each still alone",
+            hp.still_loads == SET_STILLS && hp.still_sets == 0);
+   /* The sets come first, in request order; a single's task here
+    * never answers */
+   ok = 1;
+   for (i = 0; i < (unsigned)hp.set_items; i++)
+      if (th[i].status == GFX_THUMBNAIL_STATUS_PENDING)
+         ok = 0;
+   check("sets", "a set's stills land", ok);
+   gfx_thumbnail_flush_requests();
+   check("sets", "a second flush sends nothing",
+         hp.set_items + hp.still_loads == SET_STILLS);
+
+   /* cancelled before the frame's end */
+   hp.still_loads = hp.still_sets = hp.set_items = 0;
+   for (i = 0; i < 2; i++)
+   {
+      gfx_thumbnail_set_content_image(pd, ".", names[i]);
+      gfx_thumbnail_request(pd, GFX_THUMBNAIL_RIGHT, NULL, 0, &th[i],
+            0, false);
+   }
+   gfx_thumbnail_cancel_pending_requests();
+   gfx_thumbnail_flush_requests();
+   check("sets", "a cancel before the frame's end sends nothing",
+         hp.still_loads == 0 && hp.still_sets == 0);
+   check("sets", "and leaves them orphaned for a re-request",
+         gfx_thumbnail_reset_if_orphaned(&th[0])
+         && gfx_thumbnail_reset_if_orphaned(&th[1]));
+
+   /* an unthreaded queue */
+   hp.threaded_queue = 0;
+   gfx_thumbnail_set_content_image(pd, ".", names[0]);
+   gfx_thumbnail_request(pd, GFX_THUMBNAIL_RIGHT, NULL, 0, &th[0], 0, false);
+   check("sets", "an unthreaded queue takes each still at once",
+         hp.still_loads == 1 && hp.still_sets == 0);
+
+   for (i = 0; i < SET_STILLS; i++)
+   {
+      char full[64];
+      gfx_thumbnail_reset(&th[i]);
+      snprintf(full, sizeof(full), "./%s", names[i]);
+      remove(full);
+   }
+   free(pd);
+   hp.thumb_cfg      = 0;
+   hp.still_loads    = 0;
+}
+
+#ifdef PREVIEW_THREADED
+#include <retro_atomic.h>
+#include <rthreads/rthreads.h>
+#include <rthreads/retro_eventcount.h>
+#include "../../../gfx/gfx_surface_player.h"
+
+static retro_eventcount_t retire_wake;
+static retro_atomic_int_t retire_entered;
+static retro_atomic_int_t retire_released;
+
+static bool retire_feed(void *user)
+{
+   retro_atomic_store_release_int(&retire_entered, 1);
+   while (!retro_atomic_load_acquire_int(&retire_released))
+   {
+      int key = retro_eventcount_prepare_wait(&retire_wake);
+      if (!retro_atomic_load_acquire_int(&retire_released))
+         retro_eventcount_commit_wait(&retire_wake, key);
+      else
+         retro_eventcount_cancel_wait(&retire_wake);
+   }
+   return gfx_anim_preview_feed((gfx_anim_preview_t*)user);
+}
+
+static void retire_watchdog(void *unused)
+{
+   (void)unused;
+   retro_sleep(500);
+   retro_atomic_store_release_int(&retire_released, 1);
+   retro_eventcount_notify(&retire_wake);
+}
+
+static void lane_retire(const char *path)
+{
+   gfx_thumbnail_t *th = (gfx_thumbnail_t*)calloc(1, sizeof(*th));
+   gfx_surface_player_t *player;
+   sthread_t *watchdog;
+   int64_t start, deadline;
+   bool retained;
+   int unloads;
+   if (!th)
+   {
+      check("retire", "thumbnail allocated", 0);
+      return;
+   }
+   gfx_thumbnail_init_blank(th);
+   gfx_thumbnail_request_file(path, th, 0);
+   player = (gfx_surface_player_t*)th->anim_player;
+   check("retire", "playback opened for retirement test", player != NULL);
+   if (!player)
+   {
+      gfx_thumbnail_reset(th);
+      free(th);
+      return;
+   }
+   retro_eventcount_init(&retire_wake);
+   retro_atomic_store_relaxed_int(&retire_entered, 0);
+   retro_atomic_store_relaxed_int(&retire_released, 0);
+   player->cb.feed = retire_feed;
+   player->cb.feed_user = th->anim_sess;
+   gfx_thumbnail_animate(th, cpu_features_get_time_usec());
+   deadline = cpu_features_get_time_usec() + 5000000;
+   while (!retro_atomic_load_acquire_int(&retire_entered)
+         && cpu_features_get_time_usec() < deadline)
+      retro_sleep(1);
+   check("retire", "worker entered blocked feeder",
+         retro_atomic_load_acquire_int(&retire_entered));
+   {
+      gfx_surface_t *surface = (gfx_surface_t*)th->anim_surface;
+      check("retire", "producer surface remains available", surface != NULL);
+      if (surface && surface->num_slots > 1)
+      {
+         memset(surface->slots[1], 0, (size_t)VIDEO_SCALE_W(surface->dims)
+               * VIDEO_SCALE_H(surface->dims) * sizeof(uint32_t));
+         check("retire", "texture created beside the held producer",
+               gfx_surface_submit(surface, 1, player->rgba)
+                  == GFX_SURFACE_SUBMIT_DONE);
+      }
+   }
+   unloads = hp.texture_unloads;
+   watchdog = sthread_create(retire_watchdog, NULL);
+   check("retire", "watchdog created", watchdog != NULL);
+   if (!watchdog)
+      retro_atomic_store_release_int(&retire_released, 1);
+   start = cpu_features_get_time_usec();
+   gfx_thumbnail_reset(th);
+   check("retire", "reset returns before the feeder is released",
+         cpu_features_get_time_usec() - start < 100000
+         && !retro_atomic_load_acquire_int(&retire_released));
+   check("retire", "reset detaches playback and producer slots",
+         !th->anim_player && !th->anim_surface && !th->anim_lifetime);
+   check("retire", "reset retains the producer texture",
+         hp.texture_unloads == unloads);
+   retained = !retro_atomic_load_acquire_int(&retire_released);
+   free(th);
+   retro_atomic_store_release_int(&retire_released, 1);
+   retro_eventcount_notify(&retire_wake);
+   if (watchdog)
+      sthread_join(watchdog);
+   if (retained)
+   {
+      deadline = cpu_features_get_time_usec() + 5000000;
+      while (!video_player_stop(player->vp)
+            && cpu_features_get_time_usec() < deadline)
+         retro_sleep(1);
+      check("retire", "retired worker acknowledges completion",
+            video_player_stop(player->vp));
+   }
+   gfx_thumbnail_flush_requests();
+   check("retire", "polling reclaims the retired texture",
+         hp.texture_unloads == unloads + 1);
+   gfx_thumbnail_anim_worker_deinit();
+   retro_eventcount_free(&retire_wake);
+}
+#endif
+
 int main(int argc, char **argv)
 {
    int i;
@@ -267,6 +544,11 @@ int main(int argc, char **argv)
       printf("usage: %s <video> [more...]\n", argv[0]);
       return 2;
    }
+#ifdef PREVIEW_THREADED
+   lane_retire(argv[1]);
+#endif
+   lane_savestate_thumbnail_path();
+   lane_still_sets();
    for (i = 1; i < argc; i++)
       run(argv[i], argv[i], 1);
 

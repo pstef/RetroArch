@@ -638,6 +638,36 @@ static enum gfx_wrap_type video_shader_wrap_str_to_mode(const char *wrap_mode)
    return RARCH_WRAP_DEFAULT;
 }
 
+bool video_shader_check_hdr_output(
+      const struct video_shader *shader, unsigned output_mode)
+{
+   if (video_shader_hdr_output_compatible(shader, output_mode))
+      return true;
+   RARCH_ERR("[Shaders] Explicit HDR encoding requires a matching output.\n");
+   return false;
+}
+
+static bool video_shader_parse_hdr_mode(config_file_t *conf,
+      struct video_shader *shader)
+{
+   struct config_entry_list *entry = config_get_entry(conf, "hdr_mode");
+   const char *value = entry ? entry->value : NULL;
+   unsigned i;
+   for (i = 0; i < shader->num_parameters; i++)
+      if (!strcmp(shader->parameters[i].id, "hdr_mode"))
+         return false;
+   if (!value || !shader->passes || !video_shader_source_ident_is_slang(
+            shader->pass[shader->passes - 1].source.path))
+      return false;
+   if (!strcmp(value, "auto"))
+      shader->hdr_mode = 0;
+   else if (value[0] >= '0' && value[0] <= '2' && !value[1])
+      shader->hdr_mode = (unsigned)(value[0] - '0') + 1;
+   else
+      return false;
+   return true;
+}
+
 /**
  * video_shader_parse_pass:
  * @param conf
@@ -1300,7 +1330,8 @@ void video_shader_resolve_parameters(struct video_shader *shader)
    if (!video_shader_param_sources_changed(shader))
    {
       for (i = 0; i < shader->num_parameters; i++)
-         shader->parameters[i].current = shader->parameters[i].initial;
+         video_shader_param_set(&shader->parameters[i],
+               shader->parameters[i].initial);
       return;
    }
 
@@ -1472,7 +1503,7 @@ void video_shader_resolve_parameters(struct video_shader *shader)
                      param->desc,    param->id,      param->initial,
                      param->minimum, param->maximum, param->step, param->pass);
 #endif
-               param->current  = param->initial;
+               video_shader_param_set(param, param->initial);
 
                shader->num_parameters++;
                param++;
@@ -1515,10 +1546,14 @@ bool video_shader_load_current_parameter_values(
       if (entry)
       {
          struct video_shader_parameter *parameter = &shader->parameters[i];
+         float value                              = 0.0f;
 
          /* Log each parameter read */
-         if (config_get_float(conf, parameter->id, &parameter->current))
-            RARCH_DBG("[Shaders] Load parameter value: \"%s\" = %f.\n", parameter->id, parameter->current);
+         if (config_get_float(conf, parameter->id, &value))
+         {
+            video_shader_param_set(parameter, value);
+            RARCH_DBG("[Shaders] Load parameter value: \"%s\" = %f.\n", parameter->id, value);
+         }
          else
             RARCH_WARN("[Shaders] Load parameter value: \"%s\" is set in preset but couldn't load its value.\n",
                         parameter->id);
@@ -1632,6 +1667,8 @@ static bool video_shader_write_root_preset(const struct video_shader *shader,
    RARCH_DBG("[Shaders] Saving full preset to: \"%s\".\n", path);
 
    config_set_int(conf, "shaders", shader->passes);
+   if (shader->hdr_mode)
+      config_set_int(conf, "hdr_mode", shader->hdr_mode - 1);
    if (shader->feedback_pass >= 0)
       config_set_int(conf, "feedback_pass", shader->feedback_pass);
 
@@ -1696,8 +1733,10 @@ static bool video_shader_write_root_preset(const struct video_shader *shader,
    /* Write shader parameters which are different than the default shader values */
    if (shader->num_parameters)
       for (i = 0; i < shader->num_parameters; i++)
-         if (shader->parameters[i].current != shader->parameters[i].initial)
-            config_set_float(conf, shader->parameters[i].id, shader->parameters[i].current);
+         if (video_shader_param_get(&shader->parameters[i])
+               != shader->parameters[i].initial)
+            config_set_float(conf, shader->parameters[i].id,
+                  video_shader_param_get(&shader->parameters[i]));
 
    if (shader->luts)
    {
@@ -2102,6 +2141,14 @@ static bool video_shader_write_referenced_preset(
    conf->path = strdup(path_to_save_conformed);
 
    config_file_add_reference(conf, path_to_ref);
+   if (shader->hdr_mode != ref_shader->hdr_mode)
+   {
+      if (shader->hdr_mode)
+         config_set_int(conf, "hdr_mode", shader->hdr_mode - 1);
+      else
+         config_set_string(conf, "hdr_mode", "auto");
+   }
+
 
    conf->flags |= CONF_FILE_FLG_MODIFIED;
 
@@ -2272,10 +2319,10 @@ static bool video_shader_write_referenced_preset(
    {
       for (i = 0; i < shader->num_parameters; i++)
       {
-         if (     shader->parameters[i].current
-               != ref_shader->parameters[i].current)
+         if (     video_shader_param_get(&shader->parameters[i])
+               != video_shader_param_get(&ref_shader->parameters[i]))
             config_set_float(conf, shader->parameters[i].id,
-                  shader->parameters[i].current);
+                  video_shader_param_get(&shader->parameters[i]));
       }
    }
 
@@ -2425,6 +2472,9 @@ static bool video_shader_load_root_config_into_shader(
 
    /* Load the parameter values */
    video_shader_load_current_parameter_values(conf, shader);
+   if (num_passes == shader->passes)
+      video_shader_parse_hdr_mode(conf, shader);
+
 
 #ifdef DEBUG
    RARCH_DBG("[Shaders] Number of passes: %u.\n", shader->passes);
@@ -2459,6 +2509,9 @@ static bool video_shader_override_values(config_file_t *override_conf,
    if (!shader || !override_conf)
       return false;
 
+   if (video_shader_parse_hdr_mode(override_conf, shader))
+      return_val = true;
+
    /* If the shader has parameters */
    if (shader->num_parameters)
    {
@@ -2470,15 +2523,16 @@ static bool video_shader_override_values(config_file_t *override_conf,
          if (config_get_entry(override_conf, shader->parameters[i].id))
          {
             struct video_shader_parameter *parameter = &shader->parameters[i];
+            float value                              = 0.0f;
 
             /* Set the shader's parameter value */
-            config_get_float(override_conf, parameter->id,
-                  &parameter->current);
+            if (config_get_float(override_conf, parameter->id, &value))
+               video_shader_param_set(parameter, value);
 
 #ifdef DEBUG
             RARCH_DBG("[Shaders] Parameter: \"%s\" = %f.\n",
                   parameter->id,
-                  parameter->current);
+                  video_shader_param_get(parameter));
 #endif
 
             return_val = true;
@@ -2556,6 +2610,11 @@ static bool video_shader_combine_shaders(
       combined_shader->passes += 1;
    }
 
+   combined_shader->hdr_mode = combined_shader->passes == first_shader->passes
+      ? first_shader->hdr_mode :
+      (combined_shader->passes == first_shader->passes + second_shader->passes
+         ? second_shader->hdr_mode : 0);
+
    for (i = 0; i < first_shader->luts && i < GFX_MAX_TEXTURES; i++)
    {
       strlcpy(combined_shader->lut[i].id,
@@ -2605,7 +2664,8 @@ static bool video_shader_combine_shaders(
                first_shader->num_parameters,
                combined_shader->parameters[i].id);
       if (param)
-         combined_shader->parameters[i].current = param->current;
+         video_shader_param_set(&combined_shader->parameters[i],
+               video_shader_param_get(param));
 
       /* Check the shader to append */
       param = video_shader_parse_find_parameter(
@@ -2613,7 +2673,8 @@ static bool video_shader_combine_shaders(
                second_shader->num_parameters,
                combined_shader->parameters[i].id);
       if (param)
-         combined_shader->parameters[i].current = param->current;
+         video_shader_param_set(&combined_shader->parameters[i],
+               video_shader_param_get(param));
    }
 
    return true;
@@ -4105,6 +4166,8 @@ bool video_shader_apply_shader(
          }
          d->state       = SHADER_LOAD_IDLE;
          d->driver_data = NULL;
+         task_notify_fire(&d->done, d->preset_path,
+               "Replaced by another shader load.");
       }
 
       d->type         = (unsigned)type;
@@ -4333,6 +4396,10 @@ void video_shader_toggle(settings_t *settings, bool write)
 #ifdef HAVE_MENU
    struct video_shader *menu_shdr  = menu_shader_get();
    struct menu_state *menu_st      = menu_state_get_ptr();
+
+   /* a video driver that runs no shader has none to toggle */
+   if (!menu_shdr)
+      return;
 
    menu_shdr->flags               &= ~SHDR_FLAG_MODIFIED;
    menu_shdr->flags               &= ~SHDR_FLAG_TEMPORARY;

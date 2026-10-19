@@ -40,6 +40,11 @@ struct vulkan_filter_chain_texture
    VkImageView view;
    VkImageLayout layout;
    unsigned dims;                /* VIDEO_SCALE_PACK */
+   /* The image's size, and where in it the frame starts, when the frame
+    * is not all of it: VIDEO_SCALE_PACK, padded_dims 0 for all. Only a
+    * chain that reads frames in place takes a frame that is not. */
+   unsigned padded_dims;
+   unsigned origin;
    VkFormat format;
 };
 
@@ -104,6 +109,9 @@ struct vulkan_filter_chain_create_info
    VkFormat original_format;
    unsigned max_input_dims;      /* VIDEO_SCALE_PACK */
    struct vulkan_filter_chain_swapchain_info swapchain;
+   /* Frames may come inside a larger image (padded_dims, origin): the
+    * passes are built to read them there where the preset allows. */
+   bool frame_rect;
 #ifdef VULKAN_HDR_SWAPCHAIN
    bool hdr_enabled;
 #endif /* VULKAN_HDR_SWAPCHAIN */ 
@@ -131,8 +139,17 @@ void vulkan_filter_chain_notify_sync_index(vulkan_filter_chain_t *chain,
 
 bool vulkan_filter_chain_init(vulkan_filter_chain_t *chain);
 
+void vulkan_filter_chain_set_passthrough(
+      vulkan_filter_chain_t *chain, unsigned passthrough);
+
+void vulkan_filter_chain_set_source_hdr(
+      vulkan_filter_chain_t *chain, unsigned source_hdr);
+
 void vulkan_filter_chain_set_input_texture(vulkan_filter_chain_t *chain,
       const struct vulkan_filter_chain_texture *texture);
+
+/* Whether the chain reads a frame where it lies in a larger image. */
+bool vulkan_filter_chain_reads_in_place(vulkan_filter_chain_t *chain);
 
 void vulkan_filter_chain_set_frame_count(vulkan_filter_chain_t *chain,
       uint64_t count);
@@ -158,6 +175,11 @@ void vulkan_filter_chain_set_simulate_scanline(vulkan_filter_chain_t *chain,
 void vulkan_filter_chain_set_frame_direction(vulkan_filter_chain_t *chain,
       int32_t direction);
 
+/* Cuts the final pass to @scissor, inside its viewport, until NULL is
+ * set: a view placed larger than the part of its target it may fill. */
+void vulkan_filter_chain_set_scissor(vulkan_filter_chain_t *chain,
+      const VkRect2D *scissor);
+
 void vulkan_filter_chain_set_frame_time_delta(vulkan_filter_chain_t *chain,
       uint32_t time_delta);
 
@@ -176,6 +198,9 @@ void vulkan_filter_chain_set_core_aspect_rot(vulkan_filter_chain_t *chain,
 #ifdef VULKAN_HDR_SWAPCHAIN
 void vulkan_filter_chain_set_hdr_mode(vulkan_filter_chain_t *chain,
       unsigned hdr_mode);
+
+void vulkan_filter_chain_set_peak_nits(vulkan_filter_chain_t *chain,
+      float peak_nits);
 
 void vulkan_filter_chain_set_paper_white_nits(vulkan_filter_chain_t *chain,
       float paper_white_nits);
@@ -201,12 +226,24 @@ void vulkan_filter_chain_build_offscreen_passes(vulkan_filter_chain_t *chain,
       VkCommandBuffer cmd, const VkViewport *vp);
 void vulkan_filter_chain_build_viewport_pass(vulkan_filter_chain_t *chain,
       VkCommandBuffer cmd, const VkViewport *vp, const float *mvp);
+/* The final pass again, into another viewport in the same frame, for a
+ * view shown in both eyes. It keeps the first draw's uniforms, and the
+ * feedback buffers swap once per frame. */
+void vulkan_filter_chain_build_viewport_pass_again(
+      vulkan_filter_chain_t *chain,
+      VkCommandBuffer cmd, const VkViewport *vp, const float *mvp);
 void vulkan_filter_chain_end_frame(vulkan_filter_chain_t *chain,
       VkCommandBuffer cmd);
 
 vulkan_filter_chain_t *vulkan_filter_chain_create_default(
       const struct vulkan_filter_chain_create_info *info,
       enum glslang_filter_chain_filter filter);
+
+/* The stock chain's form for drawing a source smaller than it is: the
+ * source at its own size into a mipmapped framebuffer, then trilinear
+ * into the viewport, whatever the filter setting. SDR only. */
+vulkan_filter_chain_t *vulkan_filter_chain_create_shrink(
+      const struct vulkan_filter_chain_create_info *info);
 
 vulkan_filter_chain_t *vulkan_filter_chain_create_from_preset(
       const struct vulkan_filter_chain_create_info *info,
@@ -220,6 +257,7 @@ bool vulkan_filter_chain_emits_hdr16(vulkan_filter_chain_t *chain);
 
 /* ---- Deferred (per-frame) filter chain construction ---- */
 
+/* The scheduled count may include a copy step pruned after reflection. */
 vulkan_filter_chain_t *vulkan_filter_chain_create_deferred(
       const struct vulkan_filter_chain_create_info *info,
       const char *path,

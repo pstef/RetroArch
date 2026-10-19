@@ -28,11 +28,12 @@ bool video_driver_texture_unload(uintptr_t *id)
 
 bool video_driver_texture_can_update(void) { return true; }
 
-bool video_driver_texture_update(uintptr_t id, void *data)
+enum video_texture_update video_driver_texture_update(uintptr_t id,
+      void *data)
 {
    (void)data;
    stub_updates++;
-   return id != 0;
+   return id ? VIDEO_TEXTURE_UPDATE_DONE : VIDEO_TEXTURE_UPDATE_REFUSED;
 }
 
 uint32_t video_driver_get_disp_flags(void) { return 0; }
@@ -53,3 +54,37 @@ enum texture_filter_type gfx_display_texture_filter(void)
 {
    return TEXTURE_FILTER_LINEAR;
 }
+
+/* No driver lends upload memory here: every slot stays the surface's. */
+void *video_driver_texture_lend(uintptr_t id, unsigned slot, size_t pitch, size_t *out_pitch)
+{
+   if (out_pitch)
+      *out_pitch = pitch;
+   (void)id; (void)slot; (void)pitch;
+   return NULL;
+}
+
+/* No device to import into */
+enum video_texture_update video_driver_texture_import(uintptr_t *id,
+      const video_frame_import_t *frame, enum texture_filter_type filter)
+{
+   (void)id; (void)frame; (void)filter;
+   return VIDEO_TEXTURE_UPDATE_REFUSED;
+}
+
+bool video_driver_texture_lend_ready(uintptr_t id, unsigned slot)
+{
+   (void)id; (void)slot;
+   return true;
+}
+
+bool video_driver_texture_lend_needs_refresh(void) { return false; }
+bool video_thread_lend_get(int idx, void **mem, size_t *pitch)
+{
+   (void)idx;
+   (void)mem;
+   (void)pitch;
+   return false;
+}
+
+bool video_thread_lend_ready(int idx) { (void)idx; return true; }

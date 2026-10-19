@@ -92,9 +92,6 @@ enum pad_kind
 
 #define BIT(n) (UINT64_C(1) << (n))
 
-/* TODO/FIXME - global referenced outside */
-extern uint64_t lifecycle_state;
-
 static uint64_t          pad_state[DEFAULT_MAX_PADS];
 static int16_t           analog_state[DEFAULT_MAX_PADS][2][2];
 static uint8_t           pad_kind[DEFAULT_MAX_PADS];
@@ -218,7 +215,7 @@ static int16_t gekko_joypad_axis(unsigned port, uint32_t joyaxis)
 }
 
 static int16_t gekko_joypad_state(rarch_joypad_info_t *joypad_info,
-      const struct retro_keybind *binds, unsigned port)
+      const uint16_t *joykeys, const uint32_t *joyaxes, unsigned port)
 {
    unsigned i;
    int16_t ret       = 0;
@@ -229,11 +226,8 @@ static int16_t gekko_joypad_state(rarch_joypad_info_t *joypad_info,
 
    for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
    {
-      /* Auto-binds are per joypad, not per user. */
-      const uint64_t joykey  = (binds[i].joykey != NO_BTN)
-         ? binds[i].joykey  : joypad_info->auto_binds[i].joykey;
-      const uint32_t joyaxis = (binds[i].joyaxis != AXIS_NONE)
-         ? binds[i].joyaxis : joypad_info->auto_binds[i].joyaxis;
+      const uint64_t joykey  = joykeys[i];
+      const uint32_t joyaxis = joyaxes[i];
       if ((uint16_t)joykey != NO_BTN && joykey < 64
             && (pad_state[port_idx] & BIT(joykey)))
          ret |= (1 << i);
@@ -376,7 +370,7 @@ static void gekko_joypad_poll(void)
    if (power_pressed)
    {
       power_pressed = 0;
-      retroarch_ctl(RARCH_CTL_SET_SHUTDOWN, NULL);
+      input_driver_platform_request(INPUT_PLATFORM_SHUTDOWN);
       return;
    }
 
@@ -437,9 +431,9 @@ static void gekko_joypad_poll(void)
 #ifdef HW_RVL
    menu_keys |= BIT(GX_WIIMOTE_HOME) | BIT(GX_CLASSIC_HOME);
 #endif
-   BIT64_CLEAR(lifecycle_state, RARCH_MENU_TOGGLE);
+   input_driver_set_platform_menu_button(false);
    if (pad_state[0] & menu_keys)
-      BIT64_SET(lifecycle_state, RARCH_MENU_TOGGLE);
+      input_driver_set_platform_menu_button(true);
 }
 
 static bool gekko_joypad_set_rumble(unsigned pad,

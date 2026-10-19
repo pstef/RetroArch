@@ -28,6 +28,17 @@
 
 #include "../../../tasks/task_cloudsync.c"
 
+/* The locked hand-over (TASK_CLOUDSYNC_FORCE_LOCK, or a backend with no
+ * pointer atomics) appends under the lock task_push_cloud_sync() makes;
+ * these tests make it themselves. */
+static void tcs_test_lock(void)
+{
+#if defined(HAVE_THREADS) && !defined(TCS_LOCK_FREE)
+   if (!tcs_manifest_lock)
+      tcs_manifest_lock = slock_new();
+#endif
+}
+
 #define THREADS 4
 #define ADDS    4000
 
@@ -47,6 +58,7 @@ size_t fill_pathname_application_special(char *s, size_t len,
 void cloud_sync_find_driver(const char *drv, const char *prefix,
       bool verbosity_enabled)
 { (void)drv; (void)prefix; (void)verbosity_enabled; }
+void cloud_sync_capture(void) { }
 bool cloud_sync_begin(cloud_sync_complete_handler_t cb, void *user_data)
 { (void)cb; (void)user_data; return false; }
 bool cloud_sync_end(cloud_sync_complete_handler_t cb, void *user_data)
@@ -60,6 +72,11 @@ bool cloud_sync_update(const char *path, RFILE *file,
 bool cloud_sync_free(const char *path, cloud_sync_complete_handler_t cb,
       void *user_data)
 { (void)path; (void)cb; (void)user_data; return false; }
+void cloud_sync_poll(cloud_sync_poll_budget_t within, void *budget) { (void)within; (void)budget; }
+void task_nbio_slice_open(nbio_budget_t *b) { b->floor = 1; }
+void task_nbio_slice_close(nbio_budget_t *b) { (void)b; }
+bool task_nbio_slice_within_budget(void *ud, size_t avail, size_t len)
+{ (void)ud; (void)avail; (void)len; return true; }
 
 /* --- the test ----------------------------------------------------------- */
 
@@ -87,10 +104,10 @@ static void add_entries(unsigned k)
       snprintf(key,  sizeof(key),  "saves/t%u/file%05u.srm", k, i);
       snprintf(hash, sizeof(hash), "hash-of-t%u-%05u", k, i);
       task_cloud_sync_add_to_updated_manifest(state, key,
-            strdup(hash), (i & 1) != 0);
+            hash, (i & 1) != 0);
       if (!(i & 3))
          task_cloud_sync_add_to_updated_manifest(state, key,
-               strdup(hash), (i & 1) == 0);
+               hash, (i & 1) == 0);
    }
 }
 
@@ -133,6 +150,7 @@ int main(void)
    size_t     local  = (size_t)(THREADS + 1) * (ADDS / 2);
    size_t     server = local + (size_t)(THREADS + 1) * (ADDS / 4);
 
+   tcs_test_lock();
    state = (task_cloud_sync_state_t*)calloc(1, sizeof(*state));
    if (!state)
       return 1;
@@ -149,9 +167,11 @@ int main(void)
    for (k = 0; k < THREADS; k++)
       sthread_join(threads[k]);
 
+#ifdef TCS_LOCK_FREE
    check("nothing is in the manifests until they are folded",
             state->updated_server_manifest->size == 0
          && state->updated_local_manifest->size == 0);
+#endif
    task_cloud_sync_fold_manifest_adds(state);
    check("every entry added reached the server manifest",
          state->updated_server_manifest->size == server);

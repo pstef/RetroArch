@@ -258,7 +258,22 @@ static SDL_Window *sdl3_window_create(unsigned width, unsigned height,
          | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
    if (fullscreen)
+   {
       flags |= SDL_WINDOW_FULLSCREEN;
+      /* Desktop full screen at the desktop's size: a window made
+       * smaller is only grown by a window manager, and without one it
+       * keeps the size it was made at. */
+      if (settings->bools.video_windowed_fullscreen)
+      {
+         const SDL_DisplayMode *mode = SDL_GetDesktopDisplayMode(
+               SDL_GetPrimaryDisplay());
+         if (mode)
+         {
+            width  = (unsigned)mode->w;
+            height = (unsigned)mode->h;
+         }
+      }
+   }
 
    if (!settings->bools.video_window_show_decorations)
       flags |= SDL_WINDOW_BORDERLESS;
@@ -311,16 +326,14 @@ static void sdl3_window_apply_fullscreen(SDL_Window *win,
    SDL_SetWindowFullscreenMode(win, exclusive ? &mode : NULL);
    SDL_SetWindowFullscreen(win, fullscreen);
 
-   if (fullscreen)
-      SDL_HideCursor();
-   else
+   /* The cursor is the frontend's, applied through sdl3_show_mouse(). */
+   if (!fullscreen)
    {
       /* Leaving fullscreen is asynchronous, and size requests
        * are dropped while still fullscreen, so we wait until
        * it has completed. */
       SDL_SyncWindow(win);
       SDL_SetWindowSize(win, width, height);
-      SDL_ShowCursor();
    }
 }
 
@@ -402,19 +415,17 @@ bool sdl3_suppress_screensaver(void *data, bool enable)
    return enable ? SDL_DisableScreenSaver() : SDL_EnableScreenSaver();
 }
 
-void sdl3_input_driver(const char *joypad_name,
-      input_driver_t **input, void **input_data)
+void sdl3_input_driver(const char *joypad_name)
 {
    /* no input driver of this window's own: the frontend starts the
     * one that goes with an SDL 3 window */
-   input_driver_left_to_frontend(INPUT_WINDOW_SDL3, input, input_data);
+   input_driver_video_window(INPUT_WINDOW_SDL3, NULL);
 }
 
 void sdl3_ctx_input_driver(void *data,
-      const char *name,
-      input_driver_t **input, void **input_data)
+      const char *name)
 {
-   sdl3_input_driver(name, input, input_data);
+   sdl3_input_driver(name);
 }
 
 bool sdl3_ctx_enabled(const char *ctx_ident)

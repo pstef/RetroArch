@@ -308,6 +308,7 @@ static const struct
    char s_0d5e69d1[28];
    char s_54e5819b[23];
    char s_009a10e3[8];
+   char s_0bd714f7[5];
    char s_0bebb490[11];
    char s_7c68a1ee[20];
    char s_f8b9e275[13];
@@ -403,7 +404,6 @@ static const struct
 #ifdef HAVE_MIST
    char s_53788998[23];
 #endif
-   char s_f228c6c5[12];
    char s_11926382[18];
    char s_645ae416[20];
    char s_dcbf8b04[19];
@@ -659,7 +659,6 @@ static const struct
    char s_ccfe26d1[18];
    char s_728ca1d3[3];
    char s_5f612db6[11];
-   char s_9f29f708[20];
    char s_b30b56ad[3];
    char s_2c04084b[16];
    char s_404e69aa[10];
@@ -845,6 +844,7 @@ static const struct
    char s_71747541[11];
    char s_ff960910[18];
    char s_61213f1d[13];
+   char s_60258de0[7];
    char s_317b17ed[11];
    char s_94c8d15f[11];
    char s_1f66aac3[10];
@@ -879,7 +879,6 @@ static const struct
    char s_d2fe3ed2[17];
    char s_730df420[15];
    char s_bcddf275[8];
-   char s_258060bf[14];
    char s_92a02470[41];
    char s_b7ef9e17[41];
    char s_8f37930f[45];
@@ -1028,7 +1027,6 @@ static const struct
 #ifdef HAVE_MIST
    char s_40e907c6[55];
 #endif
-   char s_01efec73[40];
    char s_d3fc9970[46];
    char s_740bd7c4[48];
    char s_c5a76d72[48];
@@ -1238,6 +1236,7 @@ static const struct
    char s_ed159cd6[16];
    char s_a56efbe2[7];
    char s_543fcabd[12];
+   char s_a63c824a[14];
    char s_a9f3b2c3[18];
    char s_0e7aca8a[17];
    char s_ab1afe7c[16];
@@ -1587,6 +1586,7 @@ static const struct
    "Deaktiver Informasjonsknapp",
    "Deaktiver s\303\270keknappen",
    "Inndata",
+   "Alle",
    "Tastatur%s",
    "Maks antall brukere",
    "Lukk innhold",
@@ -1682,7 +1682,6 @@ static const struct
 #ifdef HAVE_MIST
    "Vis 'Behandle kjerner'",
 #endif
-   "Vis 'Hjelp'",
    "Vis 'informasjon'",
    "Vis \"\303\205pne innhold\"",
    "Vis '\303\205pne Kjerne'",
@@ -1938,7 +1937,6 @@ static const struct
    "Heltall skalering",
    "AV",
    "Startmappe",
-   "Konfigurasjonsfiler",
    "AV",
    "Vis Startskjerm",
    "Biline\303\246r",
@@ -2124,6 +2122,7 @@ static const struct
    "GPU indeks",
    "Varslingsbakgrunn",
    "Skjermindeks",
+   "Alltid",
    "180 grader",
    "270 grader",
    "90 grader",
@@ -2158,7 +2157,6 @@ static const struct
    "Str\303\270mmekvalitet",
    "Synkronisering",
    "Videoer",
-   "Tr\303\245det video",
    "Egendefinert st\303\270rrelsesforhold (h\303\270yde)",
    "Egendefinert st\303\270rrelsesforhold (bredde)",
    "Egendefinert st\303\270rrelsesforhold (X posisjon)",
@@ -2324,7 +2322,6 @@ static const struct
 #ifdef HAVE_MIST
    "Vis 'Administrere kjerner' alternativet i hovedmenyen.",
 #endif
-   "Vis alternativet 'Hjelp' i hovedmenyen.",
    "Vis alternativet 'Informasjon' i hovedmenyen.",
    "Vis alternativet '\303\205pne innhold' i hovedmenyen.",
    "Vis alternativet '\303\245pne kjernen' i hovedmenyen.",
@@ -2571,6 +2568,7 @@ static const struct
    "Fil ikke funnet",
    "indeks",
    "Tidsavbrudd",
+   "\303\230yeblikkelig",
    "Skriv inn passord",
    "Ugyldig passord.",
    "Passord riktig.",
@@ -2625,7 +2623,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_no_blob_check[
-      (sizeof(msg_hash_no_blob) == (29362u
+      (sizeof(msg_hash_no_blob) == (29302u
 #ifdef HAVE_LAKKA
        + 178u
 #endif
@@ -3063,6 +3061,7 @@ static const uint32_t msg_hash_no_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_INFO_BUTTON,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_SEARCH_BUTTON,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_DRIVER,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_INDEX_ALL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_KEY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_MAX_USERS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_META_CLOSE_CONTENT_KEY,
@@ -3158,7 +3157,6 @@ static const uint32_t msg_hash_no_ids[] =
 #ifdef HAVE_MIST
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_MANAGER_STEAM,
 #endif
-   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CORE,
@@ -3414,7 +3412,6 @@ static const uint32_t msg_hash_no_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_INTEGER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_ASPECT_RATIO_LOCK_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_PARTICLE_EFFECT_NONE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_SHOW_START_SCREEN,
    (uint32_t)MENU_ENUM_LABEL_VALUE_RGUI_THUMB_SCALE_BILINEAR,
@@ -3600,6 +3597,7 @@ static const uint32_t msg_hash_no_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_BGCOLOR_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_OPENXR_LASER_ALWAYS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_FLIPPED_ROTATED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_ORIENTATION_VERTICAL,
@@ -3634,7 +3632,6 @@ static const uint32_t msg_hash_no_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_STREAM_QUALITY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_SYNCHRONIZATION_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_TAB,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_THREADED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_WIDTH,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_X,
@@ -3783,7 +3780,6 @@ static const uint32_t msg_hash_no_ids[] =
 #ifdef HAVE_MIST
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_CORE_MANAGER_STEAM,
 #endif
-   (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_HELP,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_INFORMATION,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CORE,
@@ -3993,6 +3989,7 @@ static const uint32_t msg_hash_no_ids[] =
    (uint32_t)MSG_FILE_NOT_FOUND,
    (uint32_t)MSG_INDEX_FILE,
    (uint32_t)MSG_INPUT_BIND_TIMEOUT,
+   (uint32_t)MSG_INPUT_COMBO_INSTANT,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_NOK,
    (uint32_t)MSG_INPUT_ENABLE_SETTINGS_PASSWORD_OK,

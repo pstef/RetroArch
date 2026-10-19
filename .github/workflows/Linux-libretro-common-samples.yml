@@ -34,7 +34,8 @@ jobs:
           # image ever drops one of them.
           # ffmpeg (with libx264 and libx265): formats/h264/rh264_lossless_test
           # and formats/h265/rh265_lossless_test build their corpora and
-          # their reference decodes with it.
+          # their reference decodes with it; with libmp3lame,
+          # formats/mp3/rmp3_frame_test its streams.
           if dpkg -s build-essential zlib1g-dev clang ffmpeg >/dev/null 2>&1; then
             echo "All packages already present on runner image; skipping apt."
             exit 0
@@ -54,13 +55,34 @@ jobs:
               build-essential zlib1g-dev clang ffmpeg && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -69,8 +91,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -84,7 +109,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build and run samples
@@ -116,9 +141,11 @@ jobs:
             unbase64_test
             crc32_test
             rinflate_window_test
+            rdeflate_hash_test
             emscripten_mmap_test
             archive_zip_test
             archive_zstd_test
+            archive_rar_test
             config_file_test
             path_resolve_realpath_test
             fill_pathname_test
@@ -132,16 +159,33 @@ jobs:
             data_transfer_prefix_test
             data_transfer_window_test
             audio_transfer_window_test
+            # rvorbis' codebook size bound, and a real stream past it.
+            rvorbis_codebook_test
             rjpeg_test
             rh264_lossless_test
             rh264_lossless_test_nothreads
+            rh264_lossless_test_volatile
+            # The hardware path's sequencing against a checking backend.
+            rh264_hw_test
+            # rmp3's frame-at-a-time API against its pull API.
+            rmp3_frame_test
+            # raac_last_size over units followed by more.
+            raac_size_test
             rh265_lossless_test
             rh265_lossless_test_nothreads
+            rh265_lossless_test_volatile
+            rh265_malformed_test
             r7z_lzma_props_test
+            r7z_archive_detach_test
+            rzip_archive_test
+            # The RAR reader on real archives (LZ and PPMd blocks,
+            # filters, Unicode names) and on mangled copies of them.
+            rrar_archive_test
             vcdiff_test
             net_ifinfo
             vfs_read_overflow_test
             vfs_mapped_ptr_test
+            vfs_prefetch_test
             vfs_large_file_test
             vfs_seek_contract_test
             vfs_bulk_read_test
@@ -150,13 +194,41 @@ jobs:
             filestream_rbuf_fault_test
             vfs_rename_replace_test
             cdrom_cuesheet_overflow_test
+            rdvd_h262_test
+            rdvd_lpcm_test
+            rdvd_ac3_test
+            rdvd_packet_test
+            rdvd_highlight_test
+            rdvd_spu_test
+            rdvd_ifo_test
+            rdvd_source_test
+            rdvd_vfs_test
+            rdvd_vfs_real_test
             cdfs_dir_record_test
             cdfs_pure_api_test
+            cdfs_io_error_test
             chd_meta_overflow_test
             strlcpy_append_test
             http_parse_test
             rjson_test
             rm3u_test
+            rmp4_fragment_test
+            rav1_test
+            rav1_picture_test
+            rav1_reference_test
+            rav1_motion_test
+            rav1_grain_test
+            rav1_reference_state_test
+            rav1_hw_session_test
+            rav1_hw_stream_test
+            rav1_mp4_stream_test
+            rav1_webm_stream_test
+            rav1_hw_backend_test
+            rav1_frame_test
+            rav1_tile_info_test
+            rav1_tiles_test
+            rav1_sequence_test
+            rav1_container_test
             rtga_test
             rbmp_test
             rbmp_encode_test
@@ -168,6 +240,7 @@ jobs:
             rpng_chunk_overflow_test
             rpng_roundtrip_test
             rpng_decode_corpus_test
+            rpng_apng_bounds_test
             # Benchmark, not a pass/fail test, but it runs its default
             # 4K comparison and exits 0, so under this job's sanitizer
             # build it doubles as end-to-end ASan/UBSan smoke coverage
@@ -183,7 +256,17 @@ jobs:
             task_queue_detach_test
             task_queue_main_thread_test
             task_queue_budget_test
+            # A switch to the threaded queue takes over the tasks
+            # already queued and counts them.
+            task_queue_switch_test
+            # A parked handler runs again on a wake, a cancel or its
+            # horizon, and not before.
+            task_queue_park_test
+            # The worker below the main thread as Horizon schedules
+            # them; the lanes need SCHED_FIFO and skip without root.
+            task_queue_fifo_prio_test
             image_blit_bands_test
+            image_loader_test
             tpool_wait_test
             # Four CPU-burning jobs on a pool of four must overlap;
             # on a one-core runner it notes that and still passes.
@@ -243,6 +326,29 @@ jobs:
             # The FLAC arm, sample-exact in every input mode, a grown
             # demuxed packet set and a raised WebM wall both resuming.
             audio_transfer_flac_test
+            # The HDR video blits: PQ and HLG to linear scRGB against
+            # double-precision references, and HLG tone-mapped as HDR.
+            image_hdr_blit_test
+            # PSP movies demultiplexed from program streams built for it,
+            # fed whole, a byte at a time and in odd chunks.
+            rpsmf_test
+            # ATRAC3 against a reference decoder's output for crafted
+            # stereo and joint stereo streams, then bad frames and
+            # garbage.
+            ratrac3_test
+            # ATRAC3plus against a reference decoder's output for a
+            # stereo stream (tones, gain points, swap and negate masks)
+            # and a mono one, then bad frames and garbage.
+            ratrac3p_test
+            # Animation playback against a scripted stream: order,
+            # pacing, loops, catch-up, the worker's two jobs.
+            video_player_test
+            # VP9 reference-slot sizing, the hardware session's
+            # metadata, retries and frame leases, and WebM dispatch
+            # into it.
+            rvp9_reference_test
+            rvp9_hw_session_test
+            rwebm_hw_stream_test
           )
 
           # Targets that are built but deliberately not executed, each
@@ -301,6 +407,9 @@ jobs:
           # Samples that are currently broken at build time on a stock
           # Ubuntu host and are therefore neither built nor run.
           declare -a SKIP_DIRS=(
+            # A 3DS homebrew, built with devkitARM and run on the
+            # console or an emulator.
+            queues/ctr_task_queue_prio_test
           )
 
           is_in() {
@@ -351,9 +460,11 @@ jobs:
             #   TARGETS = a b c
             #   TARGET_TEST := foo_test     (second target in same Makefile)
             #   TARGET_TEST2 := foo_test2   (third target, fourth, ...)
+            # EXE is empty on Linux.
             mapfile -t targets < <(
               grep -hE '^(TARGET|TARGETS|TARGET_TEST[0-9]*)[[:space:]]*[:?]?=' "$d/Makefile" \
               | sed -E 's/^[^=]*=[[:space:]]*//' \
+              | sed 's/$(EXE)//g' \
               | tr -s ' \t' '\n' \
               | grep -v '^$' \
               | sort -u
@@ -401,6 +512,47 @@ jobs:
           if [[ $fails -gt 0 ]]; then
             exit 1
           fi
+
+      - name: Parse a generated DVD VOB with the native readers
+        shell: bash
+        working-directory: libretro-common/samples/formats/dvd
+        run: |
+          set -euo pipefail
+          fixture=$(mktemp --suffix=.vob)
+          trap 'rm -f "$fixture"' EXIT
+          ffmpeg -hide_banner -loglevel error -f lavfi -i color=size=720x576:rate=25 \
+            -f lavfi -i sine=sample_rate=48000 -t 0.4 \
+            -c:v mpeg2video -b:v 2000k -c:a ac3 -ac 2 -ar 48000 -f dvd -y "$fixture"
+          ./rdvd_packet_test "$fixture"
+          ./rdvd_vfs_real_test "$fixture"
+          reference=$(mktemp --suffix=.f32)
+          trap 'rm -f "$fixture" "$reference"' EXIT
+          for sample_format in s16 s32; do
+            ffmpeg -hide_banner -loglevel error -f lavfi -i color=size=720x576:rate=25 \
+              -f lavfi -i sine=sample_rate=48000 -t 0.4 \
+              -c:v mpeg2video -b:v 2000k -c:a pcm_dvd -sample_fmt "$sample_format" \
+              -ac 2 -ar 48000 -f dvd -y "$fixture"
+            ffmpeg -hide_banner -loglevel error -i "$fixture" -map 0:a:0 \
+              -c:a pcm_f32le -f f32le -y "$reference"
+            ./rdvd_vfs_real_test "$fixture" "$reference"
+          done
+
+      - name: Reconstruct progressive H262 I pictures against a reference
+        shell: bash
+        working-directory: libretro-common/samples/formats/dvd
+        run: |
+          set -euo pipefail
+          fixture=$(mktemp --suffix=.m2v)
+          reference=$(mktemp --suffix=.yuv)
+          trap 'rm -f "$fixture" "$reference"' EXIT
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=160x128:rate=25 \
+            -frames:v 3 -c:v mpeg2video -g 1 -bf 0 -q:v 3 -f mpeg2video -y "$fixture"
+          ffmpeg -hide_banner -loglevel error -i "$fixture" -pix_fmt yuv420p -f rawvideo -y "$reference"
+          ./rdvd_h262_test "$fixture" "$reference"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=160x128:rate=25 \
+            -frames:v 3 -c:v mpeg1video -g 1 -bf 0 -q:v 3 -f mpeg1video -y "$fixture"
+          ffmpeg -hide_banner -loglevel error -i "$fixture" -pix_fmt yuv420p -f rawvideo -y "$reference"
+          ./rdvd_h262_test "$fixture" "$reference"
 
       - name: Compile-test retro_atomic.h from a C++11 TU
         shell: bash
@@ -533,9 +685,26 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./retro_atomic_test
+
+      - name: Run video_player_test under Clang + ThreadSanitizer, and threadless
+        shell: bash
+        working-directory: libretro-common/samples/formats/video_player
+        run: |
+          # The decode worker hands two jobs back and forth with the
+          # polling thread through atomics alone; the threadless shape
+          # decodes every frame on the polling thread.
+          set -u
+          set -o pipefail
+
+          make clean
+          CC=clang make -j$(nproc) all SANITIZER=thread
+          TSAN_OPTIONS=halt_on_error=1 ./video_player_test
+          make clean
+          make -j$(nproc) all THREADS=0 SANITIZER=address,undefined
+          ./video_player_test
 
       - name: Run rtime_localtime_test under Clang + ThreadSanitizer
         shell: bash
@@ -548,7 +717,7 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./rtime_localtime_test
 
@@ -563,7 +732,7 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./retro_triple_buffer_test
 
@@ -578,7 +747,7 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./audio_mixer_voice_threads_test
 
@@ -599,9 +768,21 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./mpsc_stack_test
+
+      - name: Run retro_spsc_test on the POSIX shm mirror
+        shell: bash
+        working-directory: libretro-common/samples/queues/retro_spsc_test
+        run: |
+          # Linux mirrors a ring through memfd; macOS and the BSDs take
+          # the POSIX shm path, which this builds here so it runs on
+          # every push, under ASan.
+          set -eu
+          make clean
+          make -j$(nproc) all CC="gcc -DRETRO_SPSC_MIRROR_SHM" SANITIZER=address,undefined
+          ./retro_spsc_test
 
       - name: Run retro_spsc_test under Clang + ThreadSanitizer
         shell: bash
@@ -624,7 +805,7 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./retro_spsc_test
 
@@ -690,9 +871,23 @@ jobs:
           set -o pipefail
 
           make clean
-          CC=clang make all SANITIZER=thread
+          CC=clang make -j$(nproc) all SANITIZER=thread
 
           TSAN_OPTIONS=halt_on_error=1 ./crc32_test
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
 
   # memmap.h picks between libretro-common's mman shim and the
   # platform's own <sys/mman.h>, and Emscripten is the target where
@@ -720,8 +915,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -735,7 +933,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Cache emsdk
@@ -779,6 +977,20 @@ jobs:
              -Wall -Wextra -Werror \
              -I include -c vfs/vfs_implementation.c \
              -o "$RUNNER_TEMP/vfs_implementation.o"
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
 
   # Cross-architecture validation lane for retro_atomic_test.
   #
@@ -833,13 +1045,34 @@ jobs:
               clang && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -848,8 +1081,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -863,7 +1099,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build fuzz target
@@ -872,7 +1108,7 @@ jobs:
         run: |
           set -eu
           LC=../../..
-          clang -O1 -g -fsanitize=fuzzer,address,undefined \
+          clang -O1 -g1 -fsanitize=fuzzer,address,undefined \
             -fno-sanitize-recover=all \
             -I$LC/include -o config_file_fuzz config_file_fuzz.c \
             $LC/file/config_file.c \
@@ -908,6 +1144,134 @@ jobs:
           # divergence or sanitizer report fails the job.
           ./config_file_fuzz -max_len=512 -max_total_time=60 \
             -print_final_stats=1 corpus/
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+
+  task-queue-mingw:
+    name: task_queue samples under mingw-w64 + Wine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Install dependencies
+        timeout-minutes: 20
+        run: |
+          for i in 1 2 3; do
+            sudo timeout 90 apt-get update -y \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
+            echo "apt-get update failed (attempt $i); retrying in 10s"
+            sleep 10
+          done
+          # Fetch first, under a bound: a download is safe to stop and
+          # resumes, an install is not. A mirror that stalls is left for
+          # the main archive on the next attempt.
+          for i in 1 2 3; do
+            sudo timeout 240 apt-get install -y --download-only \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+              build-essential gcc-mingw-w64-x86-64 wine wine64 && break
+            [ $i = 3 ] && exit 1
+            echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
+            for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
+              [ -f "$f" ] || continue
+              sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
+                -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
+            done
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
+          done
+          sudo apt-get install -y \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            build-essential gcc-mingw-w64-x86-64 wine wine64
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
+      - name: Build and run the task_queue samples under Wine
+        shell: bash
+        working-directory: libretro-common/samples/queues
+        env:
+          WINEDEBUG: -all
+        run: |
+          set -u
+          set -o pipefail
+          # The samples job above runs these on Linux only. On Win32
+          # retro_sleep() is a function in time/rtime.c rather than a
+          # macro, so a Makefile that links on Linux can still fail to
+          # link for Windows; the threaded queue's Win32 paths in
+          # rthreads.c are not run anywhere else either.
+          fails=0
+          for d in task_queue_*; do
+            t=$(sed -nE 's/^TARGET[[:space:]]*:?=[[:space:]]*//p' "$d/Makefile")
+            printf '\n[build] %s\n' "$d"
+            if ! ( cd "$d" && make clean && make CC=x86_64-w64-mingw32-gcc all ); then
+              printf '::error title=mingw build failed::%s does not build for Windows\n' "$d"
+              fails=$((fails+1))
+              continue
+            fi
+            printf '[run] %s.exe\n' "$t"
+            if ( cd "$d" && timeout 120 wine "./$t.exe" ); then
+              printf '[pass] %s\n' "$t"
+            else
+              rc=$?
+              printf '::error title=Test failed under Wine::%s exited with status %d\n' "$t" "$rc"
+              fails=$((fails+1))
+            fi
+          done
+          [[ $fails -eq 0 ]]
+
+      - name: Build and run native DVD packets under Wine
+        shell: bash
+        working-directory: libretro-common/samples/formats/dvd
+        env:
+          WINEDEBUG: -all
+        run: |
+          make CC=x86_64-w64-mingw32-gcc EXE=.exe all
+          timeout 120 wine ./rdvd_h262_test.exe
+          timeout 120 wine ./rdvd_lpcm_test.exe
+          timeout 120 wine ./rdvd_ac3_test.exe
+          timeout 120 wine ./rdvd_packet_test.exe
+          timeout 120 wine ./rdvd_highlight_test.exe
+          timeout 120 wine ./rdvd_spu_test.exe
+          timeout 120 wine ./rdvd_ifo_test.exe
+          timeout 120 wine ./rdvd_source_test.exe
+          timeout 120 wine ./rdvd_vfs_test.exe
+          timeout 120 wine ./rdvd_vfs_real_test.exe
 
   retro-atomic-cross:
     name: Cross-arch retro_atomic_test (${{ matrix.arch }})
@@ -947,13 +1311,34 @@ jobs:
               build-essential ${{ matrix.apt_pkgs }} qemu-user-static && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -962,13 +1347,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ matrix.arch }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ github.workflow }}-${{ github.job }}-
+            ccache-${{ github.workflow }}-${{ github.job }}-${{ matrix.arch }}-
 
       - name: Enable ccache
         run: |
@@ -977,7 +1365,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build retro_atomic_test for ${{ matrix.arch }}
@@ -1029,6 +1417,20 @@ jobs:
             exit 1
           fi
 
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ matrix.arch }}-${{ github.sha }}
+
   # encoding_crc32() picks a different implementation per target: the
   # ARMv8 CRC32 instructions when the compiler advertises +crc, a
   # PCLMULQDQ fold on x86, and a slicing-by-8 table everywhere else.
@@ -1050,7 +1452,7 @@ jobs:
   crc32-cross:
     name: Cross-arch crc32_test (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -1099,13 +1501,34 @@ jobs:
               build-essential ${{ matrix.apt_pkgs }} qemu-user-static && break
             [ $i = 3 ] && exit 1
             echo "package download failed or stalled (attempt $i); retrying from archive.ubuntu.com"
+            if [ ! -d /etc/apt/ra-orig ]; then
+              sudo mkdir /etc/apt/ra-orig
+              sudo cp -a /etc/apt/sources.list.d /etc/apt/ra-orig/
+              [ ! -f /etc/apt/sources.list ] || sudo cp -a /etc/apt/sources.list /etc/apt/ra-orig/
+            fi
             for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
               [ -f "$f" ] || continue
               sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g' \
                 -e 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
             done
-            sudo timeout 90 apt-get update -y \
-              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 || true
+            # A refresh cut short or refused leaves apt no package lists: it
+            # is retried, without translations or command-not-found data, and
+            # the mirror is put back when the archive will not answer either.
+            upd="-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::Languages=none
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false
+              -o APT::Update::Error-Mode=any"
+            ok=0
+            for j in 1 2; do
+              sudo timeout 120 apt-get update -y $upd && { ok=1; break; }
+            done
+            if [ $ok = 0 ]; then
+              sudo rm -rf /etc/apt/sources.list.d
+              sudo cp -a /etc/apt/ra-orig/sources.list.d /etc/apt/
+              [ ! -f /etc/apt/ra-orig/sources.list ] || sudo cp -a /etc/apt/ra-orig/sources.list /etc/apt/
+              sudo rm -rf /etc/apt/ra-orig
+              sudo timeout 120 apt-get update -y $upd || true
+            fi
           done
           sudo apt-get install -y \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
@@ -1114,13 +1537,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Link with lld
+        run: sh .github/workflows/scripts/use-lld.sh
+
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ matrix.name }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ github.workflow }}-${{ github.job }}-
+            ccache-${{ github.workflow }}-${{ github.job }}-${{ matrix.name }}-
 
       - name: Enable ccache
         run: |
@@ -1129,7 +1555,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 500M
+          ccache -M 250M
           ccache -z
 
       - name: Build crc32_test for ${{ matrix.name }}
@@ -1172,6 +1598,43 @@ jobs:
           fi
           make clean
 
+      - name: Build and run the sinc kernels under qemu-user
+        if: startsWith(matrix.name, 'aarch64') || matrix.name == 'armv7'
+        shell: bash
+        working-directory: samples/audio
+        run: |
+          set -euo pipefail
+          # The only place the NEON sinc kernels run: aarch64 the
+          # intrinsics, armv7 the armeabi assembly for both table
+          # layouts, against the scalar kernels, through dispatch and
+          # the fast-forward stages, and shared between siblings.
+          flags="${{ matrix.cflags }}"
+          asm=0
+          if [ "${{ matrix.name }}" = armv7 ]; then
+             flags="-mfpu=neon"
+             asm=1
+          fi
+          tests="sinc_dispatch sinc_hq sinc_fastforward sinc_sibling"
+          for d in $tests; do
+             make -C $d clean
+             CFLAGS="$flags" make -C $d CC="${{ matrix.cc }}" NEON_ASM=$asm
+          done
+          # Each test is one qemu-user process on one CPU: run them all
+          # at once, and print each one's output once it is done.
+          declare -A pid
+          for d in $tests; do
+             ${{ matrix.qemu }} -L ${{ matrix.sysroot }} $d/${d}_test \
+                > "$RUNNER_TEMP/$d.log" 2>&1 &
+             pid[$d]=$!
+          done
+          fail=0
+          for d in $tests; do
+             wait "${pid[$d]}" || { echo "FAIL $d"; fail=1; }
+             cat "$RUNNER_TEMP/$d.log"
+             make -C $d clean
+          done
+          exit $fail
+
       - name: Run vfs_mapped_ptr_test without mappings (MMAP=0)
         shell: bash
         working-directory: libretro-common/samples/file/vfs
@@ -1185,7 +1648,7 @@ jobs:
           # is also the only coverage the platforms without mappings
           # get.  Verified to fail here with the window advance off by
           # one, which the mapped lane does not notice at all.
-          make clean all MMAP=0 SANITIZER=address,undefined
+          make clean MMAP=0 SANITIZER=address,undefined && make -j$(nproc) all MMAP=0 SANITIZER=address,undefined
           ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
              UBSAN_OPTIONS=print_stacktrace=1 timeout 120 \
              ./vfs_mapped_ptr_test
@@ -1209,3 +1672,17 @@ jobs:
                ./vfs_v5_metadata_test
             echo "[pass] vfs_v5_metadata_test (FAKE_CFR=$mode, ASan)"
           done
+
+      - name: ccache statistics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ccache -sv
+
+      - name: Save ccache
+        # Only master's pushes keep a cache: pull requests restore
+        # master's, so one push does not evict the next one's.
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.workflow }}-${{ github.job }}-${{ matrix.name }}-${{ github.sha }}

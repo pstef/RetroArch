@@ -278,15 +278,24 @@ typedef struct settings
       unsigned video_max_swapchain_images;
       unsigned video_filter_threads;
       unsigned video_swap_interval;
+      unsigned video_driver_pacing;
       unsigned video_hard_sync_frames;
       unsigned video_frame_delay;
+      unsigned video_scanline_sync_offset;
       unsigned video_viwidth;
       unsigned video_ps2_mode;
       unsigned video_gamma;
       unsigned video_flicker_filter;
       unsigned video_aspect_ratio_idx;
       unsigned video_rotation;
+      unsigned video_stereo_mode;
+      unsigned video_screen_layout;
+      unsigned video_openxr_refresh_rate;
+      unsigned video_openxr_controllers;
+      unsigned video_openxr_laser;
+      unsigned video_openxr_placement;
       unsigned video_fse_negotiation;
+      unsigned video_hw_decode;
       unsigned screen_orientation;
       unsigned video_msg_bgcolor_red;
       unsigned video_msg_bgcolor_green;
@@ -420,6 +429,7 @@ typedef struct settings
       unsigned window_auto_dims_max;
 
       unsigned video_record_threads;
+      unsigned video_record_fifo_frames;
 
       unsigned libnx_overclock;
       unsigned ai_service_mode;
@@ -442,6 +452,10 @@ typedef struct settings
       unsigned cpu_scaling_mode;
       unsigned cpu_min_freq;
       unsigned cpu_max_freq;
+#endif
+#ifdef HAVE_LAKKA_SWITCH
+      /* enum r2p_payload_kind; paired with reboot_payload_name */
+      unsigned reboot_payload_kind;
 #endif
 
 #ifdef HAVE_MIST
@@ -553,6 +567,8 @@ typedef struct settings
       float video_hdr_menu_nits;
       float video_hdr_paper_white_nits;
       float video_hdr_max_nits;
+      float video_openxr_distance;
+      float video_openxr_width;
 
       float menu_scale_factor;
       float menu_widget_scale_factor;
@@ -605,6 +621,10 @@ typedef struct settings
       float slowmotion_ratio;
       float fastforward_ratio;
       float input_analog_deadzone;
+      float input_analog_trigger_deadzone;
+      float input_analog_outer_deadzone;
+      float input_analog_anti_deadzone;
+      float input_analog_response_curve;
       float input_axis_threshold;
       float input_analog_sensitivity;
       float input_sensor_accelerometer_sensitivity;
@@ -626,6 +646,7 @@ typedef struct settings
       /* Video */
       bool video_fullscreen;
       bool video_windowed_fullscreen;
+      bool video_dxgi_present;
       bool video_vsync;
       bool video_adaptive_vsync;
       bool video_gl_direct_spirv;
@@ -636,6 +657,9 @@ typedef struct settings
       bool video_soft_filter;
       bool video_pal60_enable;
       bool video_smooth;
+      bool video_stereo_swap_eyes;
+      bool video_openxr_enable;
+      bool video_openxr_perf_boost;
       bool video_ctx_scaling;
       bool video_force_aspect;
       bool video_frame_delay_auto;
@@ -654,11 +678,15 @@ typedef struct settings
       bool video_threaded;
       bool video_threaded_present_repeat;
       bool video_threaded_display_pacing;
+      bool video_d3d9ex_present;
       bool video_present_timing_from_display;
       bool video_font_enable;
       bool video_disable_composition;
       bool video_post_filter_record;
       bool video_gpu_record;
+      bool video_record_allow_frame_drop;
+      bool video_record_game_only;
+      bool video_record_hw_encoder;
       bool video_gpu_screenshot;
       bool video_allow_rotate;
       bool video_shared_context;
@@ -695,6 +723,7 @@ typedef struct settings
       bool audio_headphone_virtual_surround;
       bool audio_sink_rate_estimation;
       bool audio_threaded_pipeline;
+      bool audio_pipeline_fill_cap;
       bool audio_thread_priority;
       bool audio_rate_control;
       bool audio_fastforward_mute;
@@ -1049,6 +1078,8 @@ typedef struct settings
       bool discord_enable;
       bool threaded_data_runloop_enable;
       bool thread_prefer_fast_cores;
+      bool video_thread_priority;
+      bool main_thread_priority;
       bool set_supports_no_game_enable;
       bool auto_screenshot_filename;
       bool history_list_enable;
@@ -1116,6 +1147,10 @@ typedef struct settings
       bool switch_oc;
       bool switch_cec;
       bool bluetooth_ertm_disable;
+      /* When an update is staged, reboot back into the running
+       * Lakka entry instead of the selected payload so the
+       * initramfs installs it. */
+      bool reboot_force_self_on_update;
 #endif
 #ifdef HAVE_LAKKA
       bool ssh_enable;
@@ -1166,6 +1201,8 @@ typedef struct settings
       bool ai_service_pause;
 
       bool gamemode_enable;
+      bool win32_power_plan;
+      bool win32_power_plan_idle_disable;
 #ifdef HAVE_BSV_MOVIE
       bool replay_checkpoint_deserialize;
 #endif
@@ -1232,6 +1269,9 @@ typedef struct settings
 #ifdef HAVE_LAKKA
       char cpu_main_gov[32];
       char cpu_menu_gov[32];
+#endif
+#ifdef HAVE_LAKKA_SWITCH
+      char reboot_payload_name[64]; /* R2P_NAME_MAXLEN */
 #endif
 #ifdef HAVE_MICROPHONE
       char microphone_driver[32];
@@ -1329,6 +1369,9 @@ typedef struct settings
       char nfs_server[256];
       char nfs_export[PATH_MAX_LENGTH];
       char nfs_subdir[PATH_MAX_LENGTH];
+#ifdef HAVE_CLOUDSYNC
+      char cloud_sync_nfs_subdir[PATH_MAX_LENGTH];
+#endif
 #endif
 } arrays;
 

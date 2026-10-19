@@ -132,13 +132,19 @@ static void fake_device_strings(HANDLE hnd, char *path,
 /* The frontend, as far as the driver links against it. */
 uint8_t g_win32_flags;
 ui_window_win32_t main_window;
-retro_keybind_set input_config_binds[MAX_USERS];
-retro_keybind_set input_autoconf_binds[MAX_USERS];
+/* The frontend keeps a pointer to each user's row of binds; here every
+ * user has a row of this test's. */
+static retro_keybind_set kb_rows[MAX_USERS];
+static retro_keybind_set kb_auto_rows[MAX_USERS];
+struct retro_keybind *input_config_binds[MAX_USERS];
+struct retro_keybind *input_autoconf_binds[MAX_USERS];
 enum retro_key rarch_keysym_lut[RETROK_LAST];
 const struct rarch_key_map rarch_key_map_winraw[] = { { 0, RETROK_UNKNOWN } };
 static settings_t stub_settings;
 static struct menu_state stub_menu;
 settings_t *config_get_ptr(void) { return &stub_settings; }
+/* the settings a driver asks for by name, read from the ones above */
+#include "../input_config_stubs.h"
 
 /* A port's keyboard, as the frontend works it out from the port's pin
  * and number: the rule itself (input/common/input_device_pins.h), fed
@@ -185,6 +191,7 @@ unsigned input_mouse_port_index(unsigned port)
    return choice[port] < 0 ? MAX_INPUT_DEVICES : (unsigned)choice[port];
 }
 struct menu_state *menu_state_get_ptr(void) { return &stub_menu; }
+bool menu_driver_alive(void) { return (stub_menu.flags & MENU_ST_FLAG_ALIVE) != 0; }
 void RARCH_LOG(const char *fmt, ...) { (void)fmt; }
 void RARCH_DBG(const char *fmt, ...) { (void)fmt; }
 void RARCH_ERR(const char *fmt, ...) { (void)fmt; }
@@ -268,13 +275,21 @@ void task_set_flags(retro_task_t *task, uint8_t flags, bool set)
 bool video_driver_get_viewport_info(struct video_viewport *vp)
 { (void)vp; return false; }
 bool video_driver_translate_coord_viewport(struct video_viewport *vp,
-      int mouse_x, int mouse_y, int16_t *res_x, int16_t *res_y,
-      int16_t *res_screen_x, int16_t *res_screen_y, bool report_oob)
+      int mouse_x, int mouse_y, uint32_t *res_pos, uint32_t *res_screen_pos,
+      bool report_oob)
 {
-   (void)vp; (void)mouse_x; (void)mouse_y; (void)res_x; (void)res_y;
-   (void)res_screen_x; (void)res_screen_y; (void)report_oob;
+   (void)vp; (void)mouse_x; (void)mouse_y; (void)res_pos;
+   (void)res_screen_pos; (void)report_oob;
    return false;
 }
+/* The driver hands its mice and touches to the frontend at its poll. */
+void input_driver_publish_pointers(const input_pointer_frame_t *frames,
+      unsigned count, unsigned flags)
+{ (void)frames; (void)count; (void)flags; }
+void input_driver_publish_touches(const uint32_t *pos, unsigned count,
+      unsigned present, unsigned down)
+{ (void)pos; (void)count; (void)present; (void)down; }
+unsigned input_driver_pointer_read_as(unsigned i) { (void)i; return 0; }
 uintptr_t video_driver_window_get(void) { return 0; }
 void win32_clip_window(bool grab) { (void)grab; }
 void win32_hotplug_arm(void) { }
@@ -342,30 +357,62 @@ static void key(HANDLE kb, unsigned scancode, bool down)
 
 static rarch_joypad_info_t joy_info;
 
+/* A bind's key as the frontend asks the driver for it: which of these
+ * keys are down, for this port, each with the bind it is for. */
+static int bind_key_down(unsigned port, unsigned bind)
+{
+   uint16_t key  = (uint16_t)RETRO_KEYBIND_KEY(&input_config_binds[port][bind]);
+   uint8_t  id   = (uint8_t)bind;
+   uint32_t down = 0;
+   if (!RETRO_KEYBIND_VALID(&input_config_binds[port][bind]) || !key)
+      return 0;
+   winraw_keys_down(wr, port, &key, &id, 1, &down);
+   return (int)(down & 1);
+}
+
 /* what a port's bind on RetroPad B reads */
 static int pad_b(unsigned port)
 {
-   return winraw_input_state(wr, NULL, NULL, &joy_info, input_config_binds,
-         false, port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
+   return bind_key_down(port, RETRO_DEVICE_ID_JOYPAD_B);
 }
 
+/* the same asked with the RetroPad's other keys, as the frontend asks:
+ * all of a port's at once, B's among them */
 static int pad_mask_b(unsigned port)
 {
-   return (winraw_input_state(wr, NULL, NULL, &joy_info, input_config_binds,
-         false, port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK)
-         >> RETRO_DEVICE_ID_JOYPAD_B) & 1;
+   uint16_t keys[RARCH_FIRST_CUSTOM_BIND];
+   uint8_t  ids[RARCH_FIRST_CUSTOM_BIND];
+   uint32_t down  = 0;
+   unsigned i, n  = 0, b_at = 0;
+   bool     has_b = false;
+   for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
+   {
+      unsigned key = RETRO_KEYBIND_KEY(&input_config_binds[port][i]);
+      if (!RETRO_KEYBIND_VALID(&input_config_binds[port][i]) || !key)
+         continue;
+      if (i == RETRO_DEVICE_ID_JOYPAD_B)
+      {
+         b_at  = n;
+         has_b = true;
+      }
+      keys[n]  = (uint16_t)key;
+      ids[n++] = (uint8_t)i;
+   }
+   if (!has_b)
+      return 0;
+   winraw_keys_down(wr, port, keys, ids, n, &down);
+   return (int)((down >> b_at) & 1);
 }
 
 static int port_key(unsigned port, unsigned rk)
 {
-   return winraw_input_state(wr, NULL, NULL, &joy_info, input_config_binds,
-         false, port, RETRO_DEVICE_KEYBOARD, 0, rk);
+   return winraw_input_state(wr, NULL, &joy_info, kb_rows,
+         port, RETRO_DEVICE_KEYBOARD, 0, rk);
 }
 
 static int hotkey(unsigned port)
 {
-   return winraw_input_state(wr, NULL, NULL, &joy_info, input_config_binds,
-         false, port, RETRO_DEVICE_JOYPAD, 0, RARCH_FAST_FORWARD_KEY);
+   return bind_key_down(port, RARCH_FAST_FORWARD_KEY);
 }
 
 static unsigned names(void)
@@ -387,7 +434,7 @@ int main(void)
    CHECK(wr && wr->poll_drain, "the driver did not start read by the poll");
    if (!wr)
       return 1;
-   winraw_focus = true;
+   retro_atomic_store_release_int(&winraw_focus_flag, 1);
    winraw_poll(wr);
    CHECK(wr->kb_cnt == 2 && wr->kbs[0] == K(1) && wr->kbs[1] == K(2),
          "start: %u keyboards listed, want the two, oldest first", wr->kb_cnt);
@@ -500,13 +547,18 @@ int main(void)
       unsigned p;
       rarch_keysym_lut[RETROK_a] = SC_KEY_A;
       rarch_keysym_lut[RETROK_f] = SC_KEY_F;
+      for (p = 0; p < MAX_USERS; p++)
+      {
+         input_config_binds[p]   = kb_rows[p];
+         input_autoconf_binds[p] = kb_auto_rows[p];
+      }
       for (p = 0; p < 3; p++)
          input_config_binds[p][RETRO_DEVICE_ID_JOYPAD_B].attr =
-            RETRO_KEYBIND_PACK(0, RETROK_a, 1);
+            RETRO_KEYBIND_ATTR(RETROK_a, NO_BTN, 1);
       input_config_binds[0][RARCH_FAST_FORWARD_KEY].attr =
-         RETRO_KEYBIND_PACK(0, RETROK_f, 1);
+         RETRO_KEYBIND_ATTR(RETROK_f, NO_BTN, 1);
       input_config_binds[1][RARCH_FAST_FORWARD_KEY].attr =
-         RETRO_KEYBIND_PACK(0, RETROK_f, 1);
+         RETRO_KEYBIND_ATTR(RETROK_f, NO_BTN, 1);
    }
    stub_settings.uints.input_keyboard_index[0] = 1; /* K(1) */
    stub_settings.uints.input_keyboard_index[1] = 2; /* K(5) */
@@ -822,11 +874,11 @@ int main(void)
       key(K(5), SC_KEY_A, true);
       winraw_poll(wr);
       CHECK(pad_b(0), "the first port does not read its key with the window active");
-      winraw_focus = false;
+      retro_atomic_store_release_int(&winraw_focus_flag, 0);
       winraw_poll(wr);
       CHECK(!pad_b(0) && !pad_mask_b(0) && !port_key(0, RETROK_a),
             "with the setting off a key is read while another window is active");
-      winraw_focus = true;
+      retro_atomic_store_release_int(&winraw_focus_flag, 1);
       winraw_poll(wr);
 
       /* on: content reads the keys; hotkeys do not, and nothing does
@@ -836,7 +888,7 @@ int main(void)
       CHECK(wr->kb_background, "the driver did not take the setting");
       key(K(5), SC_KEY_A, true);
       key(K(5), SC_KEY_F, true);
-      winraw_focus = false;
+      retro_atomic_store_release_int(&winraw_focus_flag, 0);
       winraw_poll(wr);
       CHECK(pad_b(0) && pad_mask_b(0) && port_key(0, RETROK_a),
             "with the setting on content does not read a key while another window is active");
@@ -846,18 +898,18 @@ int main(void)
             "the open menu read a key pressed while another window was active");
       stub_menu.flags &= ~MENU_ST_FLAG_ALIVE;
       /* the window active again: everything answers */
-      winraw_focus = true;
+      retro_atomic_store_release_int(&winraw_focus_flag, 1);
       winraw_poll(wr);
       CHECK(pad_b(0) && hotkey(0), "with the window active again a key or a hotkey is not read");
       /* turned off while another window is active: the keys are let go */
-      winraw_focus = false;
+      retro_atomic_store_release_int(&winraw_focus_flag, 0);
       winraw_poll(wr);
       stub_settings.bools.input_keyboard_background = false;
       winraw_poll(wr); /* the setting is taken at the end of a poll */
       winraw_poll(wr);
       CHECK(!wr->kb_keys[SC_KEY_A],
             "turning the setting off with another window active left a key held");
-      winraw_focus = true;
+      retro_atomic_store_release_int(&winraw_focus_flag, 1);
       winraw_poll(wr);
       printf("   ok   with Background Keyboard Input on, content reads keys while another window is active; hotkeys and the menu do not; off, nothing does\n");
    }

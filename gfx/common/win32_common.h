@@ -82,6 +82,10 @@ extern float g_win32_refresh_rate;
 extern ui_window_win32_t main_window;
 extern HACCEL window_accelerators;
 
+/* A line of text has been opened in the frontend, or closed: the main
+ * window has its IME input context only while one is open. */
+void win32_text_entry(bool active);
+
 void win32_monitor_get_info(void);
 
 void win32_monitor_info(void *data, void *hm_data, unsigned *mon_id);
@@ -92,7 +96,7 @@ int win32_change_display_settings(const char *str, void *devmode_data,
 #if !defined(__WINRT__)
 bool win32_window_init(WNDCLASSEX *wndclass, bool fullscreen, const char *class_name);
 
-void win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
+bool win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
       unsigned *width, unsigned *height, bool fullscreen, bool windowed_full,
       RECT *rect, RECT *mon_rect, DWORD *style);
 #endif
@@ -109,6 +113,7 @@ bool win32_set_video_mode(void *data,
  * without destroying it. False if there is no window, or fullscreen is
  * the exclusive kind. Call on the thread that owns the window. */
 bool win32_window_set_fullscreen(unsigned dims, bool fullscreen);
+bool win32_window_set_fullscreen_exclusive(unsigned dims, bool fullscreen);
 
 /* Whether a borderless fullscreen toggle is to restyle the window in
  * place (win32_window_set_fullscreen()) rather than restart the
@@ -188,6 +193,11 @@ void win32_destroy_window(void);
  * one. False if it cannot be left - the caller destroys it as before. */
 bool win32_window_keep(void);
 
+/* The size the window's client area really is, which is not always
+ * the size win32_set_video_mode() was asked for; @dims with no window.
+ * For the swap chain a driver makes on it. */
+unsigned win32_window_client_dims(unsigned dims);
+
 /* A window left up that the next driver did not take goes. Called
  * once that driver is up, or has failed to come up. */
 void win32_window_release_kept(void);
@@ -197,6 +207,11 @@ void win32_window_release_kept(void);
  * by it: see win32_window_keep() in win32_common.c for what the driver
  * undertakes by it. */
 void win32_window_tag(const char *tag);
+
+/* Called after win32_window_proc_setup() by an OpenGL or Vulkan
+ * context: whether it presents through DXGI. A kept window is taken
+ * only by a driver presenting the same way. */
+void win32_window_tag_presentation(bool dxgi);
 
 /* True if the window win32_set_video_mode() gave this driver is one
  * the last driver left up. */

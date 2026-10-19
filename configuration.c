@@ -181,6 +181,7 @@ enum audio_driver_enum
    AUDIO_PULSE,
    AUDIO_EXT,
    AUDIO_DSOUND,
+   AUDIO_WAVEOUT,
    AUDIO_WASAPI,
    AUDIO_COREAUDIO,
    AUDIO_PS3,
@@ -244,6 +245,7 @@ enum input_driver_enum
    INPUT_RWEBINPUT,
    INPUT_DOS,
    INPUT_WINRAW,
+   INPUT_WIN32,
    INPUT_NULL
 };
 
@@ -260,6 +262,7 @@ enum joypad_driver_enum
    JOYPAD_CTR,
    JOYPAD_SWITCH,
    JOYPAD_DINPUT,
+   JOYPAD_WINMM,
    JOYPAD_UDEV,
    JOYPAD_LINUXRAW,
    JOYPAD_ANDROID,
@@ -443,6 +446,9 @@ const struct input_bind_map input_config_bind_map[RARCH_BIND_LIST_END_NULL] = {
    DECLARE_META_BIND(2, runahead_toggle,       RARCH_RUNAHEAD_TOGGLE,        MENU_ENUM_LABEL_VALUE_INPUT_META_RUNAHEAD_TOGGLE),
    DECLARE_META_BIND(2, preempt_toggle,        RARCH_PREEMPT_TOGGLE,         MENU_ENUM_LABEL_VALUE_INPUT_META_PREEMPT_TOGGLE),
    DECLARE_META_BIND(2, video_filter_toggle,   RARCH_VIDEO_FILTER_TOGGLE,    MENU_ENUM_LABEL_VALUE_INPUT_META_VIDEO_FILTER_TOGGLE),
+   DECLARE_META_BIND(2, headset_recenter,      RARCH_HEADSET_RECENTER,       MENU_ENUM_LABEL_VALUE_INPUT_META_HEADSET_RECENTER),
+   DECLARE_META_BIND(2, laser_pointer_toggle,  RARCH_LASER_POINTER_TOGGLE,   MENU_ENUM_LABEL_VALUE_INPUT_META_LASER_POINTER_TOGGLE),
+   DECLARE_META_BIND(2, headset_view_toggle,   RARCH_HEADSET_VIEW_TOGGLE,    MENU_ENUM_LABEL_VALUE_INPUT_META_HEADSET_VIEW_TOGGLE),
    DECLARE_META_BIND(2, fps_toggle,            RARCH_FPS_TOGGLE,             MENU_ENUM_LABEL_VALUE_INPUT_META_FPS_TOGGLE),
    DECLARE_META_BIND(2, toggle_statistics,     RARCH_STATISTICS_TOGGLE,      MENU_ENUM_LABEL_VALUE_INPUT_META_STATISTICS_TOGGLE),
    DECLARE_META_BIND(2, ai_service,            RARCH_AI_SERVICE,             MENU_ENUM_LABEL_VALUE_INPUT_META_AI_SERVICE),
@@ -585,6 +591,8 @@ static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_WASAPI;
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_XAUDIO;
 #elif defined(HAVE_DSOUND)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_DSOUND;
+#elif defined(HAVE_WAVEOUT)
+static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_WAVEOUT;
 #elif defined(HAVE_AL)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_AL;
 #elif defined(HAVE_SL)
@@ -657,7 +665,9 @@ static const enum midi_driver_enum MIDI_DEFAULT_DRIVER = MIDI_ALSA;
 static const enum midi_driver_enum MIDI_DEFAULT_DRIVER = MIDI_NULL;
 #endif
 
-#if defined(HAVE_STEAM) && defined(__linux__) && defined(HAVE_SDL2)
+#if defined(HAVE_STEAM) && defined(__linux__) && defined(HAVE_SDL3)
+static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_SDL3;
+#elif defined(HAVE_STEAM) && defined(__linux__) && defined(HAVE_SDL2)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_SDL2;
 #elif defined(__WINRT__) || defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_UWP;
@@ -681,6 +691,8 @@ static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_RWEBINPUT;
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_DINPUT;
 #elif defined(_WIN32) && !defined(HAVE_DINPUT) && _WIN32_WINNT >= 0x0501
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_WINRAW;
+#elif defined(_WIN32) && defined(HAVE_WIN32INPUT)
+static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_WIN32;
 #elif defined(PS2)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_PS2;
 #elif defined(__PS3__)
@@ -723,7 +735,7 @@ static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_DOS;
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_NULL;
 #endif
 
-#if defined(HAVE_STEAM) && defined(__linux__) && defined(HAVE_SDL2)
+#if defined(HAVE_STEAM) && defined(__linux__) && (defined(HAVE_SDL2) || defined(HAVE_SDL3))
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_SDL;
 #elif defined(HAVE_XINPUT)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_XINPUT;
@@ -751,6 +763,8 @@ static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_SWITCH;
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_SDL_DINGUX;
 #elif defined(HAVE_DINPUT)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_DINPUT;
+#elif defined(HAVE_WINMM_JOYPAD)
+static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_WINMM;
 #elif defined(HAVE_UDEV)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_UDEV;
 #elif defined(__linux) && !defined(ANDROID)
@@ -968,7 +982,7 @@ static void config_settings_list_full(const char *key, unsigned cap)
  * many for its list wrote past the end of the allocation, and the
  * process died of heap corruption at the next allocation - at
  * startup, on every run. A setting there is no room for is now left
- * out and said so, loudly; tools/settings_capacity_check.py, in CI,
+ * out and said so, loudly; tools/settings_capacity_check.c, in CI,
  * counts what each list is given against what it holds, so that it
  * is found before anything is run. */
 #define GENERAL_SETTING(key, configval, default_enable, default_setting, type, handle_setting) \
@@ -1265,6 +1279,8 @@ const char *config_get_default_audio(void)
          return "sdl3";
       case AUDIO_DSOUND:
          return "dsound";
+      case AUDIO_WAVEOUT:
+         return "waveout";
       case AUDIO_WASAPI:
          return "wasapi";
       case AUDIO_XAUDIO:
@@ -1530,6 +1546,8 @@ const char *config_get_default_input(void)
          return "sdl_dingux";
       case INPUT_DINPUT:
          return "dinput";
+      case INPUT_WIN32:
+         return "win32";
       case INPUT_WINRAW:
          return "raw";
       case INPUT_X:
@@ -1604,6 +1622,8 @@ const char *config_get_default_joypad(void)
          return "switch";
       case JOYPAD_DINPUT:
          return "dinput";
+      case JOYPAD_WINMM:
+         return "winmm";
       case JOYPAD_UDEV:
          return "udev";
       case JOYPAD_LINUXRAW:
@@ -2024,6 +2044,9 @@ static struct config_array_setting *populate_settings_array(
    SETTING_ARRAY("nfs_server",                            settings->arrays.nfs_server, false, NULL, true);
    SETTING_ARRAY("nfs_export",                            settings->arrays.nfs_export, false, NULL, true);
    SETTING_ARRAY("nfs_subdir",                            settings->arrays.nfs_subdir, false, NULL, true);
+#ifdef HAVE_CLOUDSYNC
+   SETTING_ARRAY("cloud_sync_nfs_subdir",                 settings->arrays.cloud_sync_nfs_subdir, false, NULL, true);
+#endif
 #endif
 #ifdef HAVE_SMBCLIENT
    SETTING_ARRAY_SENSITIVE("smb_client_username",         settings->arrays.smb_client_username, false, NULL, true);
@@ -2036,6 +2059,9 @@ static struct config_array_setting *populate_settings_array(
 #ifdef HAVE_LAKKA
    SETTING_ARRAY("cpu_main_gov",                 settings->arrays.cpu_main_gov, false, NULL, true);
    SETTING_ARRAY("cpu_menu_gov",                 settings->arrays.cpu_menu_gov, false, NULL, true);
+#endif
+#ifdef HAVE_LAKKA_SWITCH
+   SETTING_ARRAY("reboot_payload_name",          settings->arrays.reboot_payload_name, false, NULL, true);
 #endif
 
    *size = count;
@@ -2241,6 +2267,7 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("switch_oc",                     &settings->bools.switch_oc, true, DEFAULT_SWITCH_OC, false);
    SETTING_BOOL("switch_cec",                    &settings->bools.switch_cec, true, DEFAULT_SWITCH_CEC, false);
    SETTING_BOOL("bluetooth_ertm_disable",        &settings->bools.bluetooth_ertm_disable, true, DEFAULT_BLUETOOTH_ERTM, false);
+   SETTING_BOOL("reboot_force_self_on_update",   &settings->bools.reboot_force_self_on_update, true, DEFAULT_REBOOT_FORCE_SELF_ON_UPDATE, false);
 #endif
    SETTING_BOOL("audio_rate_control",            &settings->bools.audio_rate_control, true, DEFAULT_RATE_CONTROL, false);
    SETTING_BOOL("audio_enable_menu_ok",          &settings->bools.audio_enable_menu_ok, true, DEFAULT_AUDIO_ENABLE_MENU_OK, false);
@@ -2483,6 +2510,8 @@ static struct config_bool_setting *populate_settings_bool(
 #endif
 #include "settings/settings_def_input_bind_timeouts.h"
 #include "settings/settings_def_video_hdr_toggles.h"
+#include "settings/settings_def_video_stereo.h"
+#include "settings/settings_def_video_headset.h"
 #include "settings/settings_def_rewind.h"
 #include "settings/settings_def_playlist_history.h"
 #ifdef HAVE_MENU
@@ -2654,6 +2683,7 @@ static struct config_bool_setting *populate_settings_bool(
 #include "settings/settings_def_updater_extract.h"
 #include "settings/settings_def_gamemode.h"
 #include "settings/settings_def_sustained_performance.h"
+#include "settings/settings_def_power_plan.h"
 #ifdef HAVE_MENU
 #include "settings/settings_def_quick_menu_shaders_view.h"
 #endif
@@ -2877,7 +2907,6 @@ static struct config_bool_setting *populate_settings_bool(
 #undef S_UINT_AT_EX_NS
 #undef S_UINT_AT_EX_H
 #undef S_UINT_AT_EX_NS_H
-   SETTING_BOOL("video_scanline_sync",           &settings->bools.video_scanline_sync, true, DEFAULT_SCANLINE_SYNC, false);
    SETTING_BOOL("video_notch_write_over_enable", &settings->bools.video_notch_write_over_enable, true, DEFAULT_NOTCH_WRITE_OVER_ENABLE, false);
 #ifdef HAVE_PSGL
    SETTING_BOOL("pal60_enable",                  &settings->bools.video_pal60_enable, true, DEFAULT_PAL60_ENABLE, false);
@@ -3205,6 +3234,8 @@ static struct config_float_setting *populate_settings_float(
 #endif
 #include "settings/settings_def_input_bind_timeouts.h"
 #include "settings/settings_def_video_hdr_toggles.h"
+#include "settings/settings_def_video_stereo.h"
+#include "settings/settings_def_video_headset.h"
 #include "settings/settings_def_rewind.h"
 #include "settings/settings_def_playlist_history.h"
 #ifdef HAVE_MENU
@@ -3376,6 +3407,7 @@ static struct config_float_setting *populate_settings_float(
 #include "settings/settings_def_updater_extract.h"
 #include "settings/settings_def_gamemode.h"
 #include "settings/settings_def_sustained_performance.h"
+#include "settings/settings_def_power_plan.h"
 #ifdef HAVE_MENU
 #include "settings/settings_def_quick_menu_shaders_view.h"
 #endif
@@ -3903,6 +3935,8 @@ static struct config_uint_setting *populate_settings_uint(
 #endif
 #include "settings/settings_def_input_bind_timeouts.h"
 #include "settings/settings_def_video_hdr_toggles.h"
+#include "settings/settings_def_video_stereo.h"
+#include "settings/settings_def_video_headset.h"
 #include "settings/settings_def_rewind.h"
 #include "settings/settings_def_playlist_history.h"
 #ifdef HAVE_MENU
@@ -4074,6 +4108,7 @@ static struct config_uint_setting *populate_settings_uint(
 #include "settings/settings_def_updater_extract.h"
 #include "settings/settings_def_gamemode.h"
 #include "settings/settings_def_sustained_performance.h"
+#include "settings/settings_def_power_plan.h"
 #ifdef HAVE_MENU
 #include "settings/settings_def_quick_menu_shaders_view.h"
 #endif
@@ -4373,6 +4408,9 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("cpu_min_freq",                  &settings->uints.cpu_min_freq,        true,   1, false);
    SETTING_UINT("cpu_max_freq",                  &settings->uints.cpu_max_freq,        true, ~0U, false);
 #endif
+#ifdef HAVE_LAKKA_SWITCH
+   SETTING_UINT("reboot_payload_kind",           &settings->uints.reboot_payload_kind, true,   0, false);
+#endif
 
 
 
@@ -4636,6 +4674,8 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #include "settings/settings_def_input_bind_timeouts.h"
 #include "settings/settings_def_video_hdr_toggles.h"
+#include "settings/settings_def_video_stereo.h"
+#include "settings/settings_def_video_headset.h"
 #include "settings/settings_def_rewind.h"
 #include "settings/settings_def_playlist_history.h"
 #ifdef HAVE_MENU
@@ -4807,6 +4847,7 @@ static struct config_int_setting *populate_settings_int(
 #include "settings/settings_def_updater_extract.h"
 #include "settings/settings_def_gamemode.h"
 #include "settings/settings_def_sustained_performance.h"
+#include "settings/settings_def_power_plan.h"
 #ifdef HAVE_MENU
 #include "settings/settings_def_quick_menu_shaders_view.h"
 #endif
@@ -5231,6 +5272,8 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #include "settings/settings_def_input_bind_timeouts.h"
 #include "settings/settings_def_video_hdr_toggles.h"
+#include "settings/settings_def_video_stereo.h"
+#include "settings/settings_def_video_headset.h"
 #include "settings/settings_def_rewind.h"
 #include "settings/settings_def_playlist_history.h"
 #ifdef HAVE_MENU
@@ -5402,6 +5445,7 @@ static struct config_int_setting *populate_settings_int(
 #include "settings/settings_def_updater_extract.h"
 #include "settings/settings_def_gamemode.h"
 #include "settings/settings_def_sustained_performance.h"
+#include "settings/settings_def_power_plan.h"
 #ifdef HAVE_MENU
 #include "settings/settings_def_quick_menu_shaders_view.h"
 #endif
@@ -5994,9 +6038,27 @@ void config_set_defaults(settings_t *target)
    *settings->arrays.cheevos_token                    = '\0';
 #endif
 
-   input_config_reset();
-   input_remapping_deinit(false);
-   input_remapping_set_defaults(false);
+   /* The input's own state - the binds, the active remap, what a
+    * controller's profile gave - is reset with the settings in use,
+    * and only with them. Filling a copy with the defaults, which the
+    * save does to write only what differs, reset all of it for a user
+    * in the middle of a game: the remap gone, each port's kind of
+    * device and analog-to-digital setting put back, and every bind and
+    * profile copied aside and copied back to survive it. A copy gets
+    * its remap defaults written into it, and nothing in use is
+    * touched. */
+   if (settings == config_st)
+   {
+      /* The binds; not the controllers that are connected, which are
+       * no setting - forgetting them as well is for whoever is about
+       * to start the joypad driver again (config_load(), and the
+       * menu's reset to defaults). */
+      input_config_reset_binds();
+      input_remapping_deinit(false);
+      input_remapping_set_defaults(false);
+   }
+   else
+      input_remapping_defaults_into(settings);
 
    configuration_set_string(settings,
          settings->paths.network_buildbot_url, DEFAULT_BUILDBOT_SERVER_URL);
@@ -6010,7 +6072,10 @@ void config_set_defaults(settings_t *target)
    {
       settings->uints.input_joypad_index[i] = (unsigned)i;
       settings->uints.input_analog_dpad_mode[i] = ANALOG_DPAD_LSTICK;
-      input_config_set_device((unsigned)i, RETRO_DEVICE_JOYPAD);
+      if (settings == config_st)
+         input_config_set_device((unsigned)i, RETRO_DEVICE_JOYPAD);
+      else
+         settings->uints.input_libretro_device[i] = RETRO_DEVICE_JOYPAD;
       settings->uints.input_mouse_index[i] = (unsigned)i;
       settings->uints.input_keyboard_index[i] = 0;
       settings->uints.input_aim_stick[i]      = INPUT_AIM_STICK_NONE;
@@ -6272,7 +6337,8 @@ void config_set_defaults(settings_t *target)
             FILE_PATH_BUILTIN,
             sizeof(new_path));
 
-      if (!path_is_directory(new_path))
+      if (     !(retroarch_get_flags() & RARCH_FLAGS_USER_DIRS_HELD)
+            && !path_is_directory(new_path))
          path_mkdir(new_path);
 
       if (!*settings->paths.path_content_favorites)
@@ -6388,6 +6454,10 @@ void config_set_defaults(settings_t *target)
 void config_load(void)
 {
    config_set_defaults(config_st);
+   /* a load is followed by the drivers starting: the controllers are
+    * found again then, and start from nothing here, as they did when
+    * the defaults forgot them */
+   input_config_forget_controllers();
 #ifdef HAVE_CONFIGFILE
    config_parse_file();
 #endif
@@ -7190,7 +7260,8 @@ static bool config_load_file(const char *path, settings_t *settings)
             FILE_PATH_BUILTIN,
             sizeof(new_path));
 
-      if (!path_is_directory(new_path))
+      if (     !(retroarch_get_flags() & RARCH_FLAGS_USER_DIRS_HELD)
+            && !path_is_directory(new_path))
          path_mkdir(new_path);
 
       if (!*settings->paths.path_content_favorites)
@@ -7560,6 +7631,8 @@ static bool config_load_file(const char *path, settings_t *settings)
    }
 
    config_read_keybinds_conf(conf);
+   /* the binds, and the device settings read above */
+   input_config_binds_changed();
 
 #if defined(HAVE_MENU) && defined(HAVE_RGUI)
    if (!check_menu_driver_compatibility(settings))
@@ -7609,6 +7682,13 @@ static bool config_load_file(const char *path, settings_t *settings)
 #endif
 
    frontend_driver_set_sustained_performance_mode(settings->bools.sustained_performance_mode);
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
+   /* Also undoes a plan left active by a run that did not exit cleanly. */
+   if (     !frontend_driver_set_power_plan(settings->bools.win32_power_plan,
+               settings->bools.win32_power_plan_idle_disable)
+         && settings->bools.win32_power_plan_idle_disable)
+      frontend_driver_set_power_plan(settings->bools.win32_power_plan, false);
+#endif
 #ifdef HAVE_COMPRESSION
    rzipstream_set_write_codec(settings->uints.save_compression_codec == 1
          ? RZIP_CODEC_ZSTD : RZIP_CODEC_DEFLATE);
@@ -7692,6 +7772,8 @@ static bool config_load_file(const char *path, settings_t *settings)
    if (size_settings)
       free(size_settings);
    first_load = false;
+   /* each port's deadzones, from the settings now loaded */
+   input_driver_deadzones_refresh();
    return true;
 }
 
@@ -7885,6 +7967,8 @@ bool config_load_override(void *data)
    else
       runloop_state_get_ptr()->flags &= ~RUNLOOP_FLAG_OVERRIDES_ACTIVE;
 
+   /* each port's deadzones, from the override's settings */
+   input_driver_deadzones_refresh();
    return true;
 }
 
@@ -7928,90 +8012,9 @@ bool config_load_override_file(const char *config_path)
    else
       runloop_state_get_ptr()->flags &= ~RUNLOOP_FLAG_OVERRIDES_ACTIVE;
 
+   /* each port's deadzones, from the override's settings */
+   input_driver_deadzones_refresh();
    return true;
-}
-
-typedef struct
-{
-   retro_keybind_set *autoconf_binds;    /* heap: too large for stack */
-   input_bind_label_set *autoconf_labels;
-   input_device_info_t device_info[MAX_INPUT_DEVICES];
-} input_autoconf_backup_t;
-
-/* Autoconf binds and device info come from controller hotplug events;
- * no config file can restore them after input_config_reset(). */
-static bool input_autoconf_state_save(input_autoconf_backup_t *bkp)
-{
-   unsigned i, j;
-   input_driver_state_t *input_st = input_state_get_ptr();
-
-   bkp->autoconf_binds  = (retro_keybind_set*)calloc(MAX_USERS,
-         sizeof(retro_keybind_set));
-   bkp->autoconf_labels = (input_bind_label_set*)calloc(MAX_USERS,
-         sizeof(input_bind_label_set));
-
-   if (!bkp->autoconf_binds || !bkp->autoconf_labels)
-   {
-      free(bkp->autoconf_binds);
-      free(bkp->autoconf_labels);
-      bkp->autoconf_binds  = NULL;
-      bkp->autoconf_labels = NULL;
-      return false;
-   }
-
-   for (i = 0; i < MAX_USERS; i++)
-   {
-      for (j = 0; j < RARCH_BIND_LIST_END; j++)
-      {
-         memcpy(&bkp->autoconf_binds[i][j], &input_autoconf_binds[i][j],
-               sizeof(struct retro_keybind));
-         /* Duplicate allocated strings (don't share pointers!) */
-         if (input_autoconf_bind_labels[i][j].joykey)
-            bkp->autoconf_labels[i][j].joykey =
-               strdup(input_autoconf_bind_labels[i][j].joykey);
-         if (input_autoconf_bind_labels[i][j].joyaxis)
-            bkp->autoconf_labels[i][j].joyaxis =
-               strdup(input_autoconf_bind_labels[i][j].joyaxis);
-      }
-   }
-
-   memcpy(bkp->device_info, input_st->input_device_info,
-         sizeof(bkp->device_info));
-   return true;
-}
-
-static void input_autoconf_state_restore(input_autoconf_backup_t *bkp)
-{
-   unsigned i, j;
-   input_driver_state_t *input_st = input_state_get_ptr();
-
-   if (!bkp->autoconf_binds || !bkp->autoconf_labels)
-      return;
-
-   for (i = 0; i < MAX_USERS; i++)
-   {
-      for (j = 0; j < RARCH_BIND_LIST_END; j++)
-      {
-         /* Free strings allocated by input_config_reset() */
-         if (input_autoconf_bind_labels[i][j].joykey)
-            free(input_autoconf_bind_labels[i][j].joykey);
-         if (input_autoconf_bind_labels[i][j].joyaxis)
-            free(input_autoconf_bind_labels[i][j].joyaxis);
-
-         memcpy(&input_autoconf_binds[i][j], &bkp->autoconf_binds[i][j],
-               sizeof(struct retro_keybind));
-         /* String ownership moves back to input_autoconf_bind_labels */
-         input_autoconf_bind_labels[i][j] = bkp->autoconf_labels[i][j];
-      }
-   }
-
-   memcpy(input_st->input_device_info, bkp->device_info,
-         sizeof(bkp->device_info));
-
-   free(bkp->autoconf_binds);
-   free(bkp->autoconf_labels);
-   bkp->autoconf_binds  = NULL;
-   bkp->autoconf_labels = NULL;
 }
 
 /**
@@ -8038,14 +8041,11 @@ bool config_unload_override(void)
    /* When using minimal config, reset to defaults first.
     * This ensures settings not present in the config file
     * get their default values restored after override unload. */
+   /* The connected controllers stay as they are: putting the settings
+    * back to their defaults does not forget them, so there is nothing
+    * of theirs to copy aside and put back around it. */
    if (settings->bools.config_save_minimal)
-   {
-      input_autoconf_backup_t bkp;
-      bool have_bkp = input_autoconf_state_save(&bkp);
       config_set_defaults(config_st);
-      if (have_bkp)
-         input_autoconf_state_restore(&bkp);
-   }
 
    if (!config_load_file(
             path_get(RARCH_PATH_CONFIG), config_st))
@@ -8075,6 +8075,8 @@ bool config_unload_override(void)
    retroarch_override_setting_set(RARCH_OVERRIDE_SETTING_STATE_PATH, NULL);
    retroarch_override_setting_set(RARCH_OVERRIDE_SETTING_SAVE_PATH, NULL);
 
+   /* each port's deadzones, from the settings put back */
+   input_driver_deadzones_refresh();
    return true;
 }
 
@@ -8366,7 +8368,7 @@ static void save_keybind_mbutton(config_file_t *conf,
       base, '_', sizeof(key));
    strlcpy_lit(key + _len, "_mbtn", sizeof(key) - _len);
 
-   switch (bind->mbutton)
+   switch (RETRO_KEYBIND_MBUTTON(bind))
    {
       case RETRO_DEVICE_ID_MOUSE_LEFT:
          config_set_uint64(conf, key, 1);
@@ -8432,7 +8434,7 @@ static void input_config_save_keybinds_user(config_file_t *conf, unsigned user)
       const struct input_bind_map *keybind =
          (const struct input_bind_map*)INPUT_CONFIG_BIND_MAP_GET(i);
       bool meta                            = keybind ? keybind->meta : false;
-      const struct retro_keybind *bind     = &input_config_binds[user][i];
+      const struct retro_keybind *bind     = input_config_bind(user, i);
       const char                 *base     = NULL;
 
       prefix[0]                            = '\0';
@@ -8479,7 +8481,7 @@ static void input_config_save_keybinds_user_override(config_file_t *conf,
       const struct input_bind_map *keybind =
          (const struct input_bind_map*)INPUT_CONFIG_BIND_MAP_GET(i);
       bool meta                            = keybind ? keybind->meta : false;
-      const struct retro_keybind *bind     = &input_config_binds[user][i];
+      const struct retro_keybind *bind     = input_config_bind(user, i);
       const char                 *base     = NULL;
 
       prefix[0]                            = '\0';
@@ -8501,7 +8503,7 @@ static void input_config_save_keybinds_user_override(config_file_t *conf,
          save_keybind_joykey (conf, prefix, base, override_bind, true);
       if (bind->joyaxis != override_bind->joyaxis)
          save_keybind_axis   (conf, prefix, base, override_bind, true);
-      if (bind->mbutton != override_bind->mbutton)
+      if (RETRO_KEYBIND_MBUTTON(bind) != RETRO_KEYBIND_MBUTTON(override_bind))
          save_keybind_mbutton(conf, prefix, base, override_bind, true);
 
       RARCH_DBG("[Override] %s = \"%s\"\n", key, btn);
@@ -8512,13 +8514,13 @@ static void input_config_save_keybinds_user_override(config_file_t *conf,
  * input_config_save_keybinds_user_minimal:
  * @conf               : pointer to config file object
  * @user               : user number
- * @default_binds      : default retro_keybind_set for comparison
+ *
  *
  * Save the current keybinds of a user (@user) to the config file (@conf),
  * but only save binds that differ from defaults. Remove binds that match defaults.
  */
 static void input_config_save_keybinds_user_minimal(config_file_t *conf,
-      unsigned user, const retro_keybind_set default_binds)
+      unsigned user)
 {
    unsigned i;
    for (i = 0; input_config_bind_map_get_valid(i); i++)
@@ -8529,8 +8531,11 @@ static void input_config_save_keybinds_user_minimal(config_file_t *conf,
       const struct input_bind_map *keybind =
          (const struct input_bind_map*)INPUT_CONFIG_BIND_MAP_GET(i);
       bool meta                            = keybind ? keybind->meta : false;
-      const struct retro_keybind *bind     = &input_config_binds[user][i];
-      const struct retro_keybind *def_bind = &default_binds[i];
+      const struct retro_keybind *bind     = input_config_bind(user, i);
+      /* the bind's default, made from its definition as a reset makes
+       * it: no copy of every user's binds with the defaults loaded */
+      struct retro_keybind def_bind_made;
+      const struct retro_keybind *def_bind = &def_bind_made;
       const char                 *base     = NULL;
       bool differs_from_default            = false;
 
@@ -8540,6 +8545,9 @@ static void input_config_save_keybinds_user_minimal(config_file_t *conf,
       if (!*prefix || !RETRO_KEYBIND_VALID(bind) || !keybind)
          continue;
 
+      input_config_bind_from_def(&def_bind_made,
+            input_config_bind_def(user, i));
+
       base                                 = keybind->base;
       btn[0]                               = '\0';
 
@@ -8547,7 +8555,7 @@ static void input_config_save_keybinds_user_minimal(config_file_t *conf,
       differs_from_default = (RETRO_KEYBIND_KEY(bind)     != RETRO_KEYBIND_KEY(def_bind))
                           || (bind->joykey  != def_bind->joykey)
                           || (bind->joyaxis != def_bind->joyaxis)
-                          || (bind->mbutton != def_bind->mbutton);
+                          || (RETRO_KEYBIND_MBUTTON(bind) != RETRO_KEYBIND_MBUTTON(def_bind));
 
       fill_pathname_join_delim(key, prefix, base, '_', sizeof(key));
 
@@ -8687,53 +8695,57 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
    /* Pre-fill existing autoconf binds for empty binds */
    for (i = 0; i < RARCH_ANALOG_BIND_LIST_END; i++)
    {
-      struct retro_keybind *bind      = &input_config_binds[user][i];
-      struct retro_keybind *auto_bind = &input_autoconf_binds[dev][i];
-      struct input_bind_label *lbl    = &input_config_bind_labels[user][i];
-      struct input_bind_label *albl   = &input_autoconf_bind_labels[dev][i];
+      struct retro_keybind *bind            = input_config_bind_edit(user, i);
+      const struct retro_keybind *auto_bind = input_autoconf_bind(dev, i);
+      const struct input_bind_label *albl =
+         input_autoconf_bind_names(dev, i);
+      /* the names the bind takes over from the profile, with what it
+       * takes over */
+      struct input_bind_label got     = { NULL, NULL };
 
       if (bind->joykey == NO_BTN && auto_bind->joykey != NO_BTN)
       {
          bind->joykey = auto_bind->joykey;
          if (albl->joykey && *albl->joykey)
-            lbl->joykey = strdup(albl->joykey);
+            got.joykey = strdup(albl->joykey);
       }
 
       if (bind->joyaxis == AXIS_NONE && auto_bind->joyaxis != AXIS_NONE)
       {
          bind->joyaxis = auto_bind->joyaxis;
          if (albl->joyaxis && *albl->joyaxis)
-            lbl->joyaxis = strdup(albl->joyaxis);
+            got.joyaxis = strdup(albl->joyaxis);
       }
+      input_config_bind_names_take(user, i, &got);
    }
 
    /* Require at least directions (D-Pad or Left Analog) and South button,
     * otherwise the profile is completely useless */
-   if (input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_B].joykey == NO_BTN)
+   if (input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_B)->joykey == NO_BTN)
       valid = false;
 
-   if (     input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_UP].joykey  == NO_BTN
-         && input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_UP].joyaxis == AXIS_NONE
-         && input_config_binds[user][RARCH_ANALOG_LEFT_Y_MINUS].joykey  == NO_BTN
-         && input_config_binds[user][RARCH_ANALOG_LEFT_Y_MINUS].joyaxis == AXIS_NONE)
+   if (     input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_UP)->joykey  == NO_BTN
+         && input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_UP)->joyaxis == AXIS_NONE
+         && input_config_bind(user, RARCH_ANALOG_LEFT_Y_MINUS)->joykey  == NO_BTN
+         && input_config_bind(user, RARCH_ANALOG_LEFT_Y_MINUS)->joyaxis == AXIS_NONE)
       valid = false;
 
-   if (     input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_DOWN].joykey  == NO_BTN
-         && input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_DOWN].joyaxis == AXIS_NONE
-         && input_config_binds[user][RARCH_ANALOG_LEFT_Y_PLUS].joykey  == NO_BTN
-         && input_config_binds[user][RARCH_ANALOG_LEFT_Y_PLUS].joyaxis == AXIS_NONE)
+   if (     input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_DOWN)->joykey  == NO_BTN
+         && input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_DOWN)->joyaxis == AXIS_NONE
+         && input_config_bind(user, RARCH_ANALOG_LEFT_Y_PLUS)->joykey  == NO_BTN
+         && input_config_bind(user, RARCH_ANALOG_LEFT_Y_PLUS)->joyaxis == AXIS_NONE)
       valid = false;
 
-   if (     input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_LEFT].joykey  == NO_BTN
-         && input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_LEFT].joyaxis == AXIS_NONE
-         && input_config_binds[user][RARCH_ANALOG_LEFT_X_MINUS].joykey  == NO_BTN
-         && input_config_binds[user][RARCH_ANALOG_LEFT_X_MINUS].joyaxis == AXIS_NONE)
+   if (     input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_LEFT)->joykey  == NO_BTN
+         && input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_LEFT)->joyaxis == AXIS_NONE
+         && input_config_bind(user, RARCH_ANALOG_LEFT_X_MINUS)->joykey  == NO_BTN
+         && input_config_bind(user, RARCH_ANALOG_LEFT_X_MINUS)->joyaxis == AXIS_NONE)
       valid = false;
 
-   if (     input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_RIGHT].joykey  == NO_BTN
-         && input_config_binds[user][RETRO_DEVICE_ID_JOYPAD_RIGHT].joyaxis == AXIS_NONE
-         && input_config_binds[user][RARCH_ANALOG_LEFT_X_PLUS].joykey  == NO_BTN
-         && input_config_binds[user][RARCH_ANALOG_LEFT_X_PLUS].joyaxis == AXIS_NONE)
+   if (     input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_RIGHT)->joykey  == NO_BTN
+         && input_config_bind(user, RETRO_DEVICE_ID_JOYPAD_RIGHT)->joyaxis == AXIS_NONE
+         && input_config_bind(user, RARCH_ANALOG_LEFT_X_PLUS)->joykey  == NO_BTN
+         && input_config_bind(user, RARCH_ANALOG_LEFT_X_PLUS)->joyaxis == AXIS_NONE)
       valid = false;
 
    /* Update config file */
@@ -8754,10 +8766,19 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
       config_set_int(conf, "input_product_id", pid_user);
    }
 
+   /* the controller's own deadzones, where it has them */
+   {
+      float v;
+      if ((v = input_config_get_device_deadzone(dev, 0)) >= 0.0f)
+         config_set_float(conf, "input_analog_deadzone", v);
+      if ((v = input_config_get_device_deadzone(dev, 1)) >= 0.0f)
+         config_set_float(conf, "input_analog_trigger_deadzone", v);
+   }
+
    for (i = 0; i < RARCH_ANALOG_BIND_LIST_END && valid; i++)
    {
       unsigned id                      = input_config_bind_order[i];
-      const struct retro_keybind *bind = &input_config_binds[user][id];
+      const struct retro_keybind *bind = input_config_bind(user, id);
 
       if (RETRO_KEYBIND_VALID(bind))
       {
@@ -8769,24 +8790,19 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
    for (i = 0; i < RARCH_ANALOG_BIND_LIST_END && valid; i++)
    {
       unsigned id                      = input_config_bind_order[i];
-      const struct retro_keybind *bind = &input_config_binds[user][id];
-      struct input_bind_label *lbl     = &input_config_bind_labels[user][id];
+      const struct retro_keybind *bind = input_config_bind(user, id);
+      const struct input_bind_label *lbl = input_config_bind_names(user, id);
 
       if (RETRO_KEYBIND_VALID(bind))
       {
          if (lbl->joykey && *lbl->joykey)
-         {
             save_keybind_joykey_label(conf, "input", input_config_bind_map_get_base(id), lbl);
-            free(lbl->joykey);
-            lbl->joykey = NULL;
-         }
 
          if (lbl->joyaxis && *lbl->joyaxis)
-         {
             save_keybind_axis_label(conf, "input", input_config_bind_map_get_base(id), lbl);
-            free(lbl->joyaxis);
-            lbl->joyaxis = NULL;
-         }
+         /* written out: the bind is called nothing from here, as each
+          * name was freed once it was saved */
+         input_config_bind_names_drop(user, id);
       }
    }
 
@@ -9073,7 +9089,6 @@ bool config_save_file(const char *path)
    bool minimal                                      = false;
    bool credentials_saved                            = false;
    settings_t                     *defaults          = NULL;
-   retro_keybind_set              *defaults_binds    = NULL;
    struct config_bool_setting     *bool_settings     = NULL;
    struct config_bool_setting     *bool_defaults     = NULL;
    struct config_int_setting     *int_settings       = NULL;
@@ -9134,74 +9149,23 @@ bool config_save_file(const char *path)
       }
       else
       {
-         /* Allocate space for default keybinds */
-         defaults_binds = (retro_keybind_set*)calloc(MAX_USERS, sizeof(retro_keybind_set));
-         if (!defaults_binds)
          {
-            /* Failed to allocate, fall back to non-minimal mode */
-            free(defaults);
-            defaults = NULL;
-            minimal = false;
-         }
-         else
-         {
-            input_autoconf_backup_t autoconf_bkp;
-            bool have_autoconf_bkp;
-            input_bind_label_set *saved_config_labels;
-            /* Heap-allocated: MAX_USERS * sizeof(retro_keybind_set) is
-             * ~51KB, too large for the stack on small-stack platforms.
-             * Matches defaults_binds above. */
-            retro_keybind_set *saved_binds;
 #ifdef HAVE_LANGEXTRA
             unsigned saved_user_language = *msg_hash_get_uint(MSG_HASH_USER_LANGUAGE);
 #endif
 
-            /* Save current input_config_binds */
-            saved_binds = (retro_keybind_set*)calloc(MAX_USERS, sizeof(retro_keybind_set));
-            if (saved_binds)
-               memcpy(saved_binds, input_config_binds,
-                     MAX_USERS * sizeof(retro_keybind_set));
-
-            /* Config-bind labels are saved and restored by value, exactly as
-             * they were when they lived inside the bind struct. */
-            saved_config_labels = (input_bind_label_set*)calloc(MAX_USERS,
-                  sizeof(input_bind_label_set));
-            if (saved_config_labels)
-               memcpy(saved_config_labels, input_config_bind_labels,
-                     MAX_USERS * sizeof(input_bind_label_set));
-
-            have_autoconf_bkp = input_autoconf_state_save(&autoconf_bkp);
-
             /* Populate the local defaults struct directly: config_st
-             * stays what every other thread's config_get_ptr() returns.
-             * input_config_reset() inside sets the default keybinds. */
+             * stays what every other thread's config_get_ptr() returns,
+             * and the input's own state is not reset for it (see
+             * config_set_defaults()). Nothing of the binds, their labels
+             * or the controllers' profiles is copied aside and put back:
+             * a bind's default is asked for where it is compared. */
             config_set_defaults(defaults);
-
-            /* Capture default keybinds (set by input_config_reset() in config_set_defaults) */
-            memcpy(defaults_binds, input_config_binds, MAX_USERS * sizeof(retro_keybind_set));
-
-            /* Restore input_config_binds */
-            if (saved_binds)
-            {
-               memcpy(input_config_binds, saved_binds,
-                     MAX_USERS * sizeof(retro_keybind_set));
-               free(saved_binds);
-            }
-
-            if (saved_config_labels)
-            {
-               memcpy(input_config_bind_labels, saved_config_labels,
-                     MAX_USERS * sizeof(input_bind_label_set));
-               free(saved_config_labels);
-            }
 
 #ifdef HAVE_LANGEXTRA
             /* Restore user_language global, clobbered by config_set_defaults. */
             msg_hash_set_uint(MSG_HASH_USER_LANGUAGE, saved_user_language);
 #endif
-
-            if (have_autoconf_bkp)
-               input_autoconf_state_restore(&autoconf_bkp);
          }
 
          /* Populate default setting arrays */
@@ -9712,11 +9676,14 @@ bool config_save_file(const char *path)
 
    for (i = 0; i < MAX_USERS; i++)
    {
-      if (minimal && defaults_binds)
-         input_config_save_keybinds_user_minimal(conf, i, defaults_binds[i]);
+      if (minimal)
+         input_config_save_keybinds_user_minimal(conf, i);
       else
          input_config_save_keybinds_user(conf, i);
    }
+
+   /* the entries and macros, as they are now */
+   input_entries_write(conf);
 
    /* Remove unused "quit_press_twice" after migrating to "confirm_quit" */
    {
@@ -9763,9 +9730,6 @@ bool config_save_file(const char *path)
       free(defaults);
    }
 
-   if (defaults_binds)
-      free(defaults_binds);
-
    if (bool_settings)
       free(bool_settings);
    if (int_settings)
@@ -9798,7 +9762,7 @@ int8_t config_save_overrides(enum override_type type,
    int tmp_i                                   = 0;
    unsigned i                                  = 0;
    int8_t ret                                  = 0;
-   retro_keybind_set *input_override_binds     = NULL;
+   input_config_binds_copy_t *input_override_binds = NULL;
    config_file_t *conf                         = NULL;
    settings_t *settings                        = NULL;
    struct config_bool_setting *bool_settings   = NULL;
@@ -9847,12 +9811,11 @@ int8_t config_save_overrides(enum override_type type,
 
    settings = (settings_t*)calloc(1, sizeof(settings_t));
    conf     = config_file_new_alloc();
-   /* MAX_USERS * sizeof(retro_keybind_set) is ~51KB; keep it off the
-    * stack (this function is reachable on small-stack platforms such
-    * as the 3DS). Allocated here so it shares the OOM bail below and
-    * is freed at the function-end cleanup. */
-   input_override_binds = (retro_keybind_set*)calloc(
-         MAX_USERS, sizeof(retro_keybind_set));
+   /* A copy of the binds is kept off the stack (this function is
+    * reachable on small-stack platforms such as the 3DS). Made here so
+    * it shares the OOM bail below and is freed at the function-end
+    * cleanup. */
+   input_override_binds = input_config_binds_copy_new();
 
    /* NULL-check: both calloc and config_file_new_alloc can
     * return NULL on OOM.  config_load_file at line ~6552
@@ -9871,7 +9834,8 @@ int8_t config_save_overrides(enum override_type type,
       if (conf)
          config_file_free(conf);
       free(settings);
-      free(input_override_binds);
+      if (input_override_binds)
+         input_config_binds_copy_free(input_override_binds);
       return -1;
    }
 
@@ -9889,7 +9853,7 @@ int8_t config_save_overrides(enum override_type type,
       path_mkdir(override_directory);
 
    /* Store current binds as override binds */
-   memcpy(input_override_binds, input_config_binds, sizeof(input_config_binds));
+   input_config_binds_copy_take(input_override_binds);
 
    /* Load the original config file in memory */
    config_load_file(
@@ -10167,13 +10131,14 @@ int8_t config_save_overrides(enum override_type type,
 
          for (j = 0; j < RARCH_BIND_LIST_END; j++)
          {
-            const struct retro_keybind *override_bind = &input_override_binds[i][j];
-            const struct retro_keybind *config_bind   = &input_config_binds[i][j];
+            const struct retro_keybind *override_bind =
+               input_config_binds_copy_bind(input_override_binds, i, j);
+            const struct retro_keybind *config_bind   = input_config_bind(i, j);
 
             if (     config_bind->joyaxis != override_bind->joyaxis
                   || config_bind->joykey  != override_bind->joykey
                   || RETRO_KEYBIND_KEY(config_bind)     != RETRO_KEYBIND_KEY(override_bind)
-                  || config_bind->mbutton != override_bind->mbutton
+                  || RETRO_KEYBIND_MBUTTON(config_bind) != RETRO_KEYBIND_MBUTTON(override_bind)
                )
                input_config_save_keybinds_user_override(conf, i, j, override_bind);
          }
@@ -10264,7 +10229,7 @@ int8_t config_save_overrides(enum override_type type,
    }
 
    /* Since config_load_file resets binds, restore overrides back to current binds */
-   memcpy(input_config_binds, input_override_binds, sizeof(input_config_binds));
+   input_config_binds_copy_restore(input_override_binds);
 
    if (bool_settings)
       free(bool_settings);
@@ -10295,7 +10260,7 @@ int8_t config_save_overrides(enum override_type type,
    if (size_overrides)
       free(size_overrides);
    free(settings);
-   free(input_override_binds);
+   input_config_binds_copy_free(input_override_binds);
 
    return ret;
 }
@@ -10353,6 +10318,9 @@ bool input_remapping_load_file(void *data, const char *path)
    if (      !conf
          || (!path || !*path))
       return false;
+
+   /* the remaps are part of what a port's mapping is made from */
+   input_config_binds_changed();
 
    if (runloop_st->name.remapfile && *runloop_st->name.remapfile)
       input_remapping_deinit(false);
@@ -10421,6 +10389,10 @@ bool input_remapping_load_file(void *data, const char *path)
             if (!config_get_int(conf, ident, &_remap))
                _remap = RETROK_UNKNOWN;
 
+            if (   _remap < (int)RETROK_UNKNOWN
+                || _remap >= (int)RETROK_LAST)
+               _remap = RETROK_UNKNOWN;
+
             configuration_set_uint(settings,
                   settings->uints.input_keymapper_ids[i][j], _remap);
          }
@@ -10453,6 +10425,10 @@ bool input_remapping_load_file(void *data, const char *path)
             _remap = -1;
 
             if (!config_get_int(conf, ident, &_remap))
+               _remap = RETROK_UNKNOWN;
+
+            if (   _remap < (int)RETROK_UNKNOWN
+                || _remap >= (int)RETROK_LAST)
                _remap = RETROK_UNKNOWN;
 
             configuration_set_uint(settings,
@@ -10493,7 +10469,7 @@ bool input_remapping_load_file(void *data, const char *path)
    /* Whenever a remap file is loaded, subsequent
     * changes to global remap-related parameters
     * must be reset at the next core deinitialisation */
-   input_state_get_ptr()->flags   |=  INP_FLAG_REMAPPING_CACHE_ACTIVE;
+   input_driver_set_remapping_cache_active();
 
    return true;
 }
@@ -10853,48 +10829,25 @@ uint8_t input_config_bind_map_get_retro_key(unsigned bind_index)
 
 void input_config_reset_autoconfig_binds(unsigned port)
 {
-   size_t i;
-   input_driver_state_t *input_st;
-   input_sensor_map_t *map;
+   unsigned i;
+   input_sensor_map_t map;
 
    if (port >= MAX_USERS)
       return;
 
-   for (i = 0; i < RARCH_BIND_LIST_END; i++)
-   {
-      input_autoconf_binds[port][i].joykey  = NO_BTN;
-      input_autoconf_binds[port][i].joyaxis = AXIS_NONE;
-      RETRO_KEYBIND_SET_VALID(&input_autoconf_binds[port][i], false);
-
-      if (input_autoconf_bind_labels[port][i].joykey)
-      {
-         free(input_autoconf_bind_labels[port][i].joykey);
-         input_autoconf_bind_labels[port][i].joykey = NULL;
-      }
-
-      if (input_autoconf_bind_labels[port][i].joyaxis)
-      {
-         free(input_autoconf_bind_labels[port][i].joyaxis);
-         input_autoconf_bind_labels[port][i].joyaxis = NULL;
-      }
-   }
+   input_autoconf_binds_none(port);
+   input_autoconf_bind_names_free(port);
 
    /* Reset sensor axis map to default identity mapping */
-   input_st = input_state_get_ptr();
-   map      = &input_st->input_sensor_map[port];
    for (i = 0; i < 6; i++)
    {
-      map->axes[i].source = (int8_t)i;
-      map->axes[i].sign   = 1;
+      map.axes[i].source = (int8_t)i;
+      map.axes[i].sign   = 1;
    }
-}
-
-const input_sensor_map_t *input_config_get_sensor_map(unsigned port)
-{
-   input_driver_state_t *input_st = input_state_get_ptr();
-   if (port >= MAX_INPUT_DEVICES)
-      return NULL;
-   return &input_st->input_sensor_map[port];
+   input_driver_set_sensor_map(port, &map);
+   /* counted again once written: this can run on a task's thread while
+    * the frontend polls */
+   input_config_binds_changed();
 }
 
 void input_config_set_autoconfig_binds(unsigned port, void *data)
@@ -10906,15 +10859,13 @@ void input_config_set_autoconfig_binds(unsigned port, void *data)
    size_t i;
    config_file_t *config       = (config_file_t*)data;
    struct retro_keybind *binds     = NULL;
-   struct input_bind_label *labels = NULL;
-   input_driver_state_t *input_st;
-   input_sensor_map_t *map;
+   const input_sensor_map_t *current;
+   input_sensor_map_t map;
 
    if ((port >= MAX_USERS) || !config)
       return;
 
-   binds  = input_autoconf_binds[port];
-   labels = input_autoconf_bind_labels[port];
+   binds  = input_autoconf_bind_edit(port, 0);
 
    for (i = 0; i < RARCH_BIND_LIST_END; i++)
    {
@@ -10924,18 +10875,23 @@ void input_config_set_autoconfig_binds(unsigned port, void *data)
       {
          char str[256];
          const char *base = keybind->base;
+         /* the names the profile gives it, if it gives any */
+         struct input_bind_label got = { NULL, NULL };
+
          fill_pathname_join_delim(str, "input", base,  '_', sizeof(str));
 
          input_config_parse_joy_button(str, config, "input", base, &binds[i],
-               &labels[i]);
+               &got);
          input_config_parse_joy_axis  (str, config, "input", base, &binds[i],
-               &labels[i]);
+               &got);
+         input_autoconf_bind_names_take(port, (unsigned)i, &got);
       }
    }
 
    /* Parse sensor axis map overrides from autoconfig profile */
-   input_st = input_state_get_ptr();
-   map      = &input_st->input_sensor_map[port];
+   if (!(current = input_config_get_sensor_map(port)))
+      return;
+   map = *current;
    for (i = 0; i < 6; i++)
    {
       char tmp[16];
@@ -10947,12 +10903,16 @@ void input_config_set_autoconfig_binds(unsigned port, void *data)
             int code = (int)strtol(tmp + 1, NULL, 0);
             if (code >= 0 && code <= 5)
             {
-               map->axes[i].source = (int8_t)code;
-               map->axes[i].sign   = (tmp[0] == '-') ? -1 : 1;
+               map.axes[i].source = (int8_t)code;
+               map.axes[i].sign   = (tmp[0] == '-') ? -1 : 1;
             }
          }
       }
    }
+   input_driver_set_sensor_map(port, &map);
+   /* counted again once written: this can run on a task's thread while
+    * the frontend polls */
+   input_config_binds_changed();
 }
 
 void input_config_parse_mouse_button(char *s,
@@ -10970,26 +10930,26 @@ void input_config_parse_mouse_button(char *s,
 
    if (config_get_array(conf, key, tmp, sizeof(tmp)))
    {
-      bind->mbutton = NO_BTN;
+      RETRO_KEYBIND_SET_MBUTTON(bind, NO_BTN);
 
       if (tmp[0]=='w')
       {
          switch (tmp[1])
          {
             case 'u':
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_WHEELUP;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_WHEELUP);
                break;
             case 'd':
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_WHEELDOWN;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_WHEELDOWN);
                break;
             case 'h':
                switch (tmp[2])
                {
                   case 'u':
-                     bind->mbutton = RETRO_DEVICE_ID_MOUSE_HORIZ_WHEELUP;
+                     RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_HORIZ_WHEELUP);
                      break;
                   case 'd':
-                     bind->mbutton = RETRO_DEVICE_ID_MOUSE_HORIZ_WHEELDOWN;
+                     RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_HORIZ_WHEELDOWN);
                      break;
                }
                break;
@@ -11001,19 +10961,19 @@ void input_config_parse_mouse_button(char *s,
          switch (val)
          {
             case 1:
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_LEFT;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_LEFT);
                break;
             case 2:
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_RIGHT;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_RIGHT);
                break;
             case 3:
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_MIDDLE;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_MIDDLE);
                break;
             case 4:
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_BUTTON_4;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_BUTTON_4);
                break;
             case 5:
-               bind->mbutton = RETRO_DEVICE_ID_MOUSE_BUTTON_5;
+               RETRO_KEYBIND_SET_MBUTTON(bind, RETRO_DEVICE_ID_MOUSE_BUTTON_5);
                break;
          }
       }

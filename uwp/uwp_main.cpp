@@ -39,6 +39,7 @@
 #include <lists/string_list.h>
 #include <queues/task_queue.h>
 #include <retro_timers.h>
+#include <retro_atomic.h>
 #include <sstream>
 #include <iomanip>
 
@@ -197,10 +198,8 @@ const struct rarch_key_map rarch_key_map_uwp[] = {
 struct input_pointer
 {
    int id;
-   int16_t x;
-   int16_t y;
-   int16_t full_x;
-   int16_t full_y;
+   uint32_t pos;        /* x, y in the viewport: VIDEO_POS_PACK */
+   uint32_t full_pos;   /* x, y in the whole screen */
    bool isInContact;
 };
 
@@ -695,10 +694,8 @@ void App::OnPointer(CoreWindow const& sender, PointerEventArgs const& args)
             &vp,
             ConvertDipsToPixels(args.CurrentPoint().Position().X, dpi),
             ConvertDipsToPixels(args.CurrentPoint().Position().Y, dpi),
-            &uwp_next_input.touch[i].x,
-            &uwp_next_input.touch[i].y,
-            &uwp_next_input.touch[i].full_x,
-            &uwp_next_input.touch[i].full_y);
+            &uwp_next_input.touch[i].pos,
+            &uwp_next_input.touch[i].full_pos);
 
       uwp_next_input.touch[i].isInContact = args.CurrentPoint().IsInContact();
 
@@ -877,6 +874,16 @@ extern "C" {
       return true;
    }
 
+   /* The UWP side of win32_window_client_dims(): the desktop one in
+    * win32_common.c is compiled out under __WINRT__. The swap chain
+    * is made on the CoreWindow, and TryResizeView() settles the view
+    * later, reporting it with the resize event SetWindowResized()
+    * sends; the size asked for stands until then, as before. */
+   unsigned win32_window_client_dims(unsigned dims)
+   {
+      return dims;
+   }
+
    /* The UWP side of win32_check_window(): the desktop one in
     * win32_common.c is compiled out under __WINRT__. Its size goes
     * back as one word in VIDEO_SCALE_PACK's layout, the same as the
@@ -922,7 +929,8 @@ extern "C" {
        * https://github.com/libretro/RetroArch/issues/13491 */
       float surface_scale    = 0;
       int ret                = -1;
-      volatile bool finished = false;
+      retro_atomic_int_t finished;
+      retro_atomic_int_init(&finished, 0);
       CoreApplication::MainView().CoreWindow().Dispatcher().RunAsync(
             CoreDispatcherPriority::Normal,
             DispatchedHandler([&surface_scale, &ret, &finished]()
@@ -942,10 +950,10 @@ extern "C" {
                      CoreWindow::GetForCurrentThread().Bounds().Height
                      * surface_scale);
                }
-               finished = true;
+               retro_atomic_store_release_int(&finished, 1);
                }));
       auto corewindow = CoreWindow::GetForCurrentThread();
-      while (!finished)
+      while (!retro_atomic_load_acquire_int(&finished))
       {
          if (corewindow)
             corewindow.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
@@ -966,7 +974,8 @@ extern "C" {
        * https://github.com/libretro/RetroArch/issues/13491 */
       float surface_scale    = 0;
       int returnValue        = -1;
-      volatile bool finished = false;
+      retro_atomic_int_t finished;
+      retro_atomic_int_init(&finished, 0);
       CoreApplication::MainView().CoreWindow().Dispatcher().RunAsync(
             CoreDispatcherPriority::Normal,
             DispatchedHandler([&surface_scale, &returnValue, &finished]()
@@ -986,10 +995,10 @@ extern "C" {
                      CoreWindow::GetForCurrentThread().Bounds().Width
                      * surface_scale);
                }
-               finished = true;
+               retro_atomic_store_release_int(&finished, 1);
                }));
       auto corewindow = CoreWindow::GetForCurrentThread();
-      while (!finished)
+      while (!retro_atomic_load_acquire_int(&finished))
       {
          if (corewindow)
             corewindow.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
@@ -1001,7 +1010,8 @@ extern "C" {
    float uwp_get_refresh_rate(void)
    {
       float ret              = 0.0f;
-      volatile bool finished = false;
+      retro_atomic_int_t finished;
+      retro_atomic_int_init(&finished, 0);
       CoreApplication::MainView().CoreWindow().Dispatcher().RunAsync(
             CoreDispatcherPriority::Normal,
             DispatchedHandler([&ret, &finished]()
@@ -1012,10 +1022,10 @@ extern "C" {
                   if (hdi)
                      ret = static_cast<float>(hdi.GetCurrentDisplayMode().RefreshRate());
                }
-               finished = true;
+               retro_atomic_store_release_int(&finished, 1);
                }));
       auto corewindow = CoreWindow::GetForCurrentThread();
-      while (!finished)
+      while (!retro_atomic_load_acquire_int(&finished))
       {
          if (corewindow)
             corewindow.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
@@ -1026,16 +1036,17 @@ extern "C" {
    float uwp_get_dpi(void)
    {
       float ret              = 0.0f;
-      volatile bool finished = false;
+      retro_atomic_int_t finished;
+      retro_atomic_int_init(&finished, 0);
       CoreApplication::MainView().CoreWindow().Dispatcher().RunAsync(
             CoreDispatcherPriority::Normal,
             DispatchedHandler([&ret, &finished]()
                {
                ret     = DisplayInformation::GetForCurrentView().RawDpiX();
-               finished = true;
+               retro_atomic_store_release_int(&finished, 1);
                }));
       auto corewindow = CoreWindow::GetForCurrentThread();
-      while (!finished)
+      while (!retro_atomic_load_acquire_int(&finished))
       {
          if (corewindow)
             corewindow.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
@@ -1123,13 +1134,13 @@ extern "C" {
       switch (id)
       {
          case RETRO_DEVICE_ID_POINTER_X:
-            return screen
-               ? uwp_current_input.touch[idx].full_x
-               : uwp_current_input.touch[idx].x;
+            return VIDEO_POS_X(screen
+               ? uwp_current_input.touch[idx].full_pos
+               : uwp_current_input.touch[idx].pos);
          case RETRO_DEVICE_ID_POINTER_Y:
-            return screen
-               ? uwp_current_input.touch[idx].full_y
-               : uwp_current_input.touch[idx].y;
+            return VIDEO_POS_Y(screen
+               ? uwp_current_input.touch[idx].full_pos
+               : uwp_current_input.touch[idx].pos);
          case RETRO_DEVICE_ID_POINTER_PRESSED:
             return uwp_current_input.touch[idx].isInContact;
          case RETRO_DEVICE_ID_POINTER_COUNT:

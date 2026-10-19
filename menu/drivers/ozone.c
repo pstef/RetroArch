@@ -20,6 +20,7 @@
 
 #include <retro_miscellaneous.h>
 #include <retro_inline.h>
+#include <retro_atomic.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
@@ -35,6 +36,7 @@
 #include <retro_math.h>
 
 #include "../../gfx/gfx_surface.h"
+#include "../../gfx/video_thread_wrapper.h"
 #include "../menu_cbs.h"
 #include "../menu_driver.h"
 #include "../menu_str.h"
@@ -197,7 +199,9 @@ enum OZONE_TEXTURE
 
 enum OZONE_THEME_TEXTURES
 {
-   OZONE_THEME_TEXTURE_SWITCH = 0,
+#ifdef HAVE_LIBNX
+   OZONE_THEME_TEXTURE_SWITCH,
+#endif
    OZONE_THEME_TEXTURE_CHECK,
 
    OZONE_THEME_TEXTURE_CURSOR_NO_BORDER,
@@ -404,9 +408,11 @@ typedef struct ozone_theme
    const float *cursor_border_0;
    const float *cursor_border_1;
 
-   uintptr_t textures[OZONE_THEME_TEXTURE_LAST];
+   gfx_surface_t *textures[OZONE_THEME_TEXTURE_LAST];
 
    const char *name;
+   /* Main thread: the textures were sent */
+   bool loaded;
 } ozone_theme_t;
 
 /* If you change this struct, also change ozone_alloc_node.
@@ -417,8 +423,8 @@ typedef struct ozone_node
 {
    char *fullpath;            /* Entry fullpath */
    char *console_name;        /* Console tab name */
-   uintptr_t icon;            /* Console tab icon */
-   uintptr_t content_icon;    /* console content icon */
+   gfx_surface_t *icon;            /* Console tab icon */
+   gfx_surface_t *content_icon;    /* console content icon */
    unsigned position_y;       /* Entry position Y */
    /* Entry height, its sublabel line count and its wrap flag share one
     * word: an entry taller than 65535 pixels is not an entry, and a
@@ -578,6 +584,8 @@ struct ozone_handle
       ozone_footer_label_t cycle_thumbnails;
       ozone_footer_label_t fullscreen_thumbnails;
       ozone_footer_label_t reset_to_default;
+      ozone_footer_label_t combo_left;   /* a combination row: Left chooses what it does */
+      ozone_footer_label_t combo_right;  /* ... Right sets its buttons */
       ozone_footer_label_t manage;
       ozone_footer_label_t metadata_override;
       ozone_footer_label_t help;
@@ -592,10 +600,11 @@ struct ozone_handle
       float stream_delay;
       enum ozone_pending_thumbnail_type pending;
    } thumbnails;
-   uintptr_t textures[OZONE_THEME_TEXTURE_LAST];
-   uintptr_t icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_LAST];
-   uintptr_t tab_textures[OZONE_TAB_TEXTURE_LAST];
+   gfx_surface_t *textures[OZONE_THEME_TEXTURE_LAST];
+   gfx_surface_t *icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_LAST];
+   gfx_surface_t *tab_textures[OZONE_TAB_TEXTURE_LAST];
    uintptr_t header_icon;
+   unsigned header_retired; /* gfx_surface_retired() it was taken at */
 
    size_t categories_selection_ptr; /* active tab id  */
    size_t categories_active_idx_old;
@@ -714,10 +723,10 @@ struct ozone_handle
     * that the clamping already done for drag scrolling applies
     * to them too. */
    int16_t wheel_notches;
-   int16_t cursor_x_old;
-   int16_t cursor_y_old;
+   uint32_t cursor_pos_old;   /* VIDEO_POS_PACK */
 
    uint16_t flags2;
+   retro_atomic_ptr_t pending_theme;
 
    uint8_t selection_lastplayed_lines;
    uint8_t system_tab_end;
@@ -757,6 +766,9 @@ struct ozone_handle
     * pass then keeps the view where it is, rather than re-deriving
     * it from the selection. */
    bool preserve_scroll_on_compute;
+   /* A cursor fade began this iteration; the compute pass may
+    * animate the scroll along with it. */
+   bool cursor_fade_started;
 
    struct
    {
@@ -1767,6 +1779,7 @@ static ozone_theme_t *ozone_themes[] = {
 
 /* Forward declarations */
 static void ozone_set_header(ozone_handle_t *ozone);
+static void ozone_set_header_icon(ozone_handle_t *ozone, uint8_t header_icon);
 static void ozone_animation_list_alpha(ozone_handle_t *ozone, bool fade_in);
 static void ozone_cursor_animation_cb(void *userdata);
 static void ozone_selection_changed(ozone_handle_t *ozone, bool allow_animation);
@@ -2099,22 +2112,22 @@ static uintptr_t ozone_entries_icon_get_texture(
       case MENU_ENUM_LABEL_DEFERRED_PLAYLIST_SETTINGS_LIST:
          return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_PLAYLIST];
       case MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY:
-         return ozone->tab_textures[OZONE_TAB_TEXTURE_HISTORY];
+         return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_HISTORY]);
       case MENU_ENUM_LABEL_GOTO_FAVORITES:
       case MENU_ENUM_LABEL_DEFERRED_FAVORITES_LIST:
-         return ozone->tab_textures[OZONE_TAB_TEXTURE_FAVORITES];
+         return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_FAVORITES]);
 #ifdef HAVE_IMAGEVIEWER
       case MENU_ENUM_LABEL_GOTO_IMAGES:
       case MENU_ENUM_LABEL_DEFERRED_IMAGES_LIST:
-         return ozone->tab_textures[OZONE_TAB_TEXTURE_IMAGE];
+         return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_IMAGE]);
 #endif
       case MENU_ENUM_LABEL_GOTO_MUSIC:
       case MENU_ENUM_LABEL_DEFERRED_MUSIC_LIST:
-         return ozone->tab_textures[OZONE_TAB_TEXTURE_MUSIC];
+         return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_MUSIC]);
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
       case MENU_ENUM_LABEL_GOTO_VIDEO:
       case MENU_ENUM_LABEL_DEFERRED_VIDEO_LIST:
-         return ozone->tab_textures[OZONE_TAB_TEXTURE_VIDEO];
+         return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_VIDEO]);
 #endif
       case MENU_ENUM_LABEL_GOTO_EXPLORE:
       case MENU_ENUM_LABEL_EXPLORE_TAB:
@@ -2169,7 +2182,7 @@ static uintptr_t ozone_entries_icon_get_texture(
       case MENU_ENUM_LABEL_DEFERRED_UPDATER_SETTINGS_LIST:
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_UPDATER];
       case MENU_ENUM_LABEL_SETTINGS:
-            return ozone->tab_textures[OZONE_TAB_TEXTURE_SETTINGS];
+            return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_SETTINGS]);
       case MENU_ENUM_LABEL_UPDATE_LAKKA:
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_MAIN_MENU];
       case MENU_ENUM_LABEL_UPDATE_CHEATS:
@@ -2233,6 +2246,7 @@ static uintptr_t ozone_entries_icon_get_texture(
       case MENU_ENUM_LABEL_SETTINGS_SHOW_FILE_BROWSER:
          return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_SETTING];
       case MENU_ENUM_LABEL_GLOBAL_CORE_OPTIONS:
+      case MENU_ENUM_LABEL_CONFIG_SAVE_MINIMAL:
       case MENU_ENUM_LABEL_SETTINGS_SHOW_AI_SERVICE:
       case MENU_ENUM_LABEL_SETTINGS_SHOW_ACCESSIBILITY:
       case MENU_ENUM_LABEL_PLAYLIST_MANAGER_DEFAULT_CORE:
@@ -2273,7 +2287,6 @@ static uintptr_t ozone_entries_icon_get_texture(
       case MENU_ENUM_LABEL_DEFERRED_LATENCY_SETTINGS_LIST:
       case MENU_ENUM_LABEL_CONTENT_SHOW_LATENCY:
       case MENU_ENUM_LABEL_SETTINGS_SHOW_LATENCY:
-      case MENU_ENUM_LABEL_MENU_FRAME_RATE:
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_LATENCY];
       case MENU_ENUM_LABEL_SAVING_SETTINGS:
       case MENU_ENUM_LABEL_DEFERRED_SAVING_SETTINGS_LIST:
@@ -2421,7 +2434,7 @@ static uintptr_t ozone_entries_icon_get_texture(
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_NOTIFICATIONS];
 #ifdef HAVE_NETWORKING
       case MENU_ENUM_LABEL_NETPLAY:
-            return ozone->tab_textures[OZONE_TAB_TEXTURE_NETWORK];
+            return GFX_SURFACE_HANDLE(ozone->tab_textures[OZONE_TAB_TEXTURE_NETWORK]);
       case MENU_ENUM_LABEL_NETPLAY_ENABLE_HOST:
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_RUN];
       case MENU_ENUM_LABEL_NETPLAY_DISCONNECT:
@@ -2656,6 +2669,8 @@ static uintptr_t ozone_entries_icon_get_texture(
          return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_ROOM_RELAY];
 #endif
       case MENU_SETTING_ACTION:
+         if (enum_idx == MENU_ENUM_LABEL_NETPLAY_REQUEST_DEVICES)
+            break;
          return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_SETTING];
       case MENU_SETTINGS_INPUT_LIBRETRO_DEVICE:
          return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_SETTINGS];
@@ -2697,7 +2712,7 @@ static uintptr_t ozone_entries_icon_get_texture(
          else if (string_ends_with_size(enum_label, "_mouse_index", enum_label_len, STRLEN_CONST("_mouse_index")))
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_MOUSE];
          else if (string_ends_with_size(enum_label, "_keyboard_index", enum_label_len, STRLEN_CONST("_keyboard_index")))
-            return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_SETTINGS];
+            return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_FILE];
          else if (string_ends_with_size(enum_label, "_analog_dpad_mode", enum_label_len, STRLEN_CONST("_analog_dpad_mode")))
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_ADC];
          else if (string_ends_with_size(enum_label, "_bind_all", enum_label_len, STRLEN_CONST("_bind_all")))
@@ -2709,7 +2724,8 @@ static uintptr_t ozone_entries_icon_get_texture(
          else if (string_ends_with_size(enum_label, "_turbo", enum_label_len, STRLEN_CONST("_turbo"))
                || string_ends_with_size(enum_label, "_hold", enum_label_len, STRLEN_CONST("_hold")))
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_TURBO];
-         else if (strstr(enum_label, "_gun_"))
+         else if (strstr(enum_label, "_gun_")
+               || strstr(enum_label, "_aim_"))
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_LGUN];
          else if (string_starts_with_size(enum_label, "input_device_reserv", STRLEN_CONST("input_device_reserv")))
             return icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_OVERRIDE];
@@ -3023,6 +3039,38 @@ static const char *ozone_entries_icon_texture_path(unsigned id)
    return NULL;
 }
 
+/* The slots' textures as one array of handles, for a frame that reads
+ * them as one set */
+static void ozone_icons_snapshot(gfx_surface_t *const *slots,
+      uintptr_t *out, unsigned n)
+{
+   unsigned i;
+   for (i = 0; i < n; i++)
+      out[i] = GFX_SURFACE_HANDLE(slots[i]);
+}
+
+/* The context's own stills, the header's borrowed handle with them */
+static void ozone_free_context_textures(ozone_handle_t *ozone)
+{
+   unsigned i;
+   ozone->header_icon = 0;
+   for (i = 0; i < OZONE_ENTRIES_ICONS_TEXTURE_LAST; i++)
+   {
+      gfx_surface_free(ozone->icons_textures[i]);
+      ozone->icons_textures[i] = NULL;
+   }
+   for (i = 0; i < OZONE_TEXTURE_LAST; i++)
+   {
+      gfx_surface_free(ozone->textures[i]);
+      ozone->textures[i] = NULL;
+   }
+   for (i = 0; i < OZONE_TAB_TEXTURE_LAST; i++)
+   {
+      gfx_surface_free(ozone->tab_textures[i]);
+      ozone->tab_textures[i] = NULL;
+   }
+}
+
 static void ozone_unload_theme_textures(ozone_handle_t *ozone)
 {
    unsigned i, j;
@@ -3031,54 +3079,122 @@ static void ozone_unload_theme_textures(ozone_handle_t *ozone)
    {
       ozone_theme_t *theme = ozone_themes[j];
       for (i = 0; i < OZONE_THEME_TEXTURE_LAST; i++)
-            video_driver_texture_unload(&theme->textures[i]);
+      {
+         gfx_surface_free(theme->textures[i]);
+         theme->textures[i] = NULL;
+      }
+      theme->loaded = false;
    }
 }
 
-/* File-static generation counter for async icon loads.
- * NOT inside ozone_handle_t — must outlive the struct.
- * Two counters: one for context_reset static textures,
- * one for horizontal list playlist icons. Separate because
- * horizontal list rebuilds must not invalidate context textures. */
-static uint64_t ozone_icon_load_gen     = 0;
-static uint64_t ozone_ctx_icon_load_gen = 0;
-
-static void ozone_reset_theme_textures(ozone_handle_t *ozone)
+/* Every theme's surfaces, made before the frames that draw them: a
+ * theme switch only sends them images, and the slots the video thread
+ * reads never change under it */
+static void ozone_make_theme_surfaces(void)
 {
-   static const char *OZONE_THEME_TEXTURES_FILES[OZONE_THEME_TEXTURE_LAST] = {
-      "switch.png",
-      "check.png",
-
-      "cursor_noborder.png",
-      "cursor_static.png"
-   };
    unsigned i, j;
-   char theme_path[NAME_MAX_LENGTH];
+   enum texture_filter_type filter = gfx_display_texture_filter();
 
    for (j = 0; j < ARRAY_SIZE(ozone_themes); j++)
-   {
-      ozone_theme_t *theme = ozone_themes[j];
-
-      if (!theme->name || theme != ozone->theme)
-         continue;
-
-      fill_pathname_join_special(
-            theme_path,
-            ozone->png_path,
-            theme->name,
-            sizeof(theme_path)
-      );
-
       for (i = 0; i < OZONE_THEME_TEXTURE_LAST; i++)
-      {
-         char texpath[PATH_MAX_LENGTH];
-         fill_pathname_join_special(texpath,
-               theme_path, OZONE_THEME_TEXTURES_FILES[i],
-               sizeof(texpath));
-         gfx_display_reset_icon_texture(texpath,
-            &theme->textures[i], gfx_display_texture_filter());
-      }
+         gfx_surface_still(&ozone_themes[j]->textures[i], filter);
+}
+
+static const char *OZONE_THEME_TEXTURES_FILES[OZONE_THEME_TEXTURE_LAST] = {
+#ifdef HAVE_LIBNX
+   "switch.png",
+#endif
+   "check.png",
+
+   "cursor_noborder.png",
+   "cursor_static.png"
+};
+
+static const char *OZONE_TAB_TEXTURES_FILES[OZONE_TAB_TEXTURE_LAST] = {
+   "retroarch.png", /* MAIN_MENU */
+   "settings.png",  /* SETTINGS_TAB */
+   "history.png",   /* HISTORY_TAB */
+   "favorites.png", /* FAVORITES_TAB */
+   "image.png",     /* IMAGES_TAB */
+   "music.png",     /* MUSIC_TAB */
+   "video.png",     /* VIDEO_TAB */
+   "netplay.png",   /* NETPLAY_TAB */
+   "add.png",       /* ADD_TAB */
+   "core.png",      /* CONTENTLESS_CORES_TAB */
+   "database.png"   /* EXPLORE_TAB */
+};
+
+static const char *OZONE_TEXTURES_FILES[OZONE_TEXTURE_LAST] = {
+   "retroarch.png",
+   "cursor_border.png"
+};
+
+/* The icon sets at a context reset, each decoded across the cores:
+ * where the file of slot @i is */
+static void ozone_theme_texture_path(unsigned i, void *ud, char *buf,
+      size_t len)
+{
+   fill_pathname_join_special(buf, (const char*)ud,
+         OZONE_THEME_TEXTURES_FILES[i], len);
+}
+
+static void ozone_texture_path(unsigned i, void *ud, char *buf, size_t len)
+{
+   ozone_handle_t *ozone = (ozone_handle_t*)ud;
+   fill_pathname_join_special(buf, ozone->png_path,
+         OZONE_TEXTURES_FILES[i], len);
+}
+
+static void ozone_tab_texture_path(unsigned i, void *ud, char *buf,
+      size_t len)
+{
+   ozone_handle_t *ozone = (ozone_handle_t*)ud;
+   switch (i)
+   {
+      /* Exceptions for icons that don't exist in 'png/sidebar/' */
+      case OZONE_TAB_TEXTURE_CONTENTLESS_CORES:
+      case OZONE_TAB_TEXTURE_EXPLORE:
+         fill_pathname_join_special(buf, ozone->icons_path,
+               OZONE_TAB_TEXTURES_FILES[i], len);
+         break;
+      default:
+         fill_pathname_join_special(buf, ozone->tab_path,
+               OZONE_TAB_TEXTURES_FILES[i], len);
+         break;
    }
+}
+
+static void ozone_entries_icon_path(unsigned i, void *ud, char *buf,
+      size_t len)
+{
+   ozone_handle_t *ozone = (ozone_handle_t*)ud;
+   fill_pathname_join_special(buf, ozone->icons_path,
+         ozone_entries_icon_texture_path(i), len);
+}
+
+static void ozone_load_theme_textures(ozone_handle_t *ozone,
+      ozone_theme_t *theme)
+{
+   char theme_path[NAME_MAX_LENGTH];
+   bool supports_rgba;
+#ifdef HAVE_THREADS
+   ozone_theme_t *pending_theme = (ozone_theme_t*)retro_atomic_exchange_ptr(
+         &ozone->pending_theme, NULL);
+   if (pending_theme)
+      theme = pending_theme;
+#endif
+
+   if (!theme->name || theme->loaded)
+      return;
+   theme->loaded = true;
+   supports_rgba = gfx_surface_wants_rgba();
+
+   fill_pathname_join_special(theme_path, ozone->png_path,
+         theme->name, sizeof(theme_path));
+
+   gfx_surface_submit_named(theme->textures, OZONE_THEME_TEXTURE_LAST,
+         gfx_display_texture_filter(), ozone_theme_texture_path,
+         theme_path, supports_rgba);
 }
 
 static void ozone_sidebar_collapse_end(void *userdata)
@@ -3274,7 +3390,7 @@ static void ozone_draw_cursor_slice(
          ozone->theme_dynamic.cursor_alpha,
          offset,
          scale_factor,
-         ozone->theme->textures[OZONE_THEME_TEXTURE_CURSOR_NO_BORDER],
+         GFX_SURFACE_HANDLE(ozone->theme->textures[OZONE_THEME_TEXTURE_CURSOR_NO_BORDER]),
          mymat
          );
 
@@ -3291,7 +3407,7 @@ static void ozone_draw_cursor_slice(
          ozone->theme_dynamic.cursor_border,
          offset,
          scale_factor,
-         ozone->textures[OZONE_TEXTURE_CURSOR_BORDER],
+         GFX_SURFACE_HANDLE(ozone->textures[OZONE_TEXTURE_CURSOR_BORDER]),
          mymat
          );
 
@@ -3397,7 +3513,10 @@ static void ozone_draw_cursor(
       ozone_apply_cursor_wiggle_offset(ozone, &new_x, &new_y);
 
    /* Draw the cursor */
+   /* The slice needs the theme's cursor texture: until it is up (a
+    * theme just switched to, a decode in flight) draw the quads */
    if (     (ozone->theme->name)
+         && GFX_SURFACE_HANDLE(ozone->theme->textures[OZONE_THEME_TEXTURE_CURSOR_NO_BORDER])
          && ((ozone->flags & OZONE_FLAG_HAS_ALL_ASSETS) || (ozone->flags2 & OZONE_FLAG2_IGNORE_MISSING_ASSETS)))
       ozone_draw_cursor_slice(ozone,
             p_disp,
@@ -3875,16 +3994,13 @@ OZONE_NOINLINE static void ozone_draw_sidebar(
 
          gfx_display_set_alpha(col, ozone->animations.alpha);
 
-         /* Icon — if node->icon is still 0 (explore view entry whose
-          * cursor texture hadn't loaded during list build), retry now. */
+         /* node->icon holds only a texture the node owns; an entry
+          * without one (an explore view, a playlist icon not landed)
+          * draws the cursor, which stays the icon set's. */
          {
-            uintptr_t icon_tex = node->icon;
-            if (!icon_tex
-                  && icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_CURSOR])
-            {
-               icon_tex   = icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_CURSOR];
-               node->icon = icon_tex;
-            }
+            uintptr_t icon_tex = GFX_SURFACE_HANDLE(node->icon);
+            if (!icon_tex)
+               icon_tex = icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_CURSOR];
             ozone_draw_icon(
                   p_disp,
                   userdata,
@@ -4378,6 +4494,7 @@ static void ozone_sidebar_update_collapse(ozone_handle_t *ozone,
    {
       /* Cursor animation */
       ozone->animations.cursor_alpha = 0.0f;
+      ozone->cursor_fade_started     = true;
 
       entry.cb                       = NULL;
       entry.duration                 = ANIMATION_CURSOR_DURATION;
@@ -4390,7 +4507,10 @@ static void ozone_sidebar_update_collapse(ozone_handle_t *ozone,
       gfx_animation_push(&entry);
    }
    else
+   {
       ozone->animations.cursor_alpha = 1.0f;
+      ozone->cursor_fade_started     = false;
+   }
 
 end:
    ozone_entries_update_thumbnail_bar(ozone, config_get_ptr()->bools.savestate_thumbnail_enable,
@@ -4419,8 +4539,10 @@ static void ozone_go_to_sidebar(ozone_handle_t *ozone,
    if (menu_show_sublabels && menu_current_sel_only)
       ozone->flags               |= OZONE_FLAG_NEED_COMPUTE;
 
-   /* Remember last selection per tab */
-   ozone->tab_selection[ozone->categories_selection_ptr] = ozone->selection;
+   /* Remember last selection per tab, for as many tabs as the array
+    * holds */
+   if (ozone->categories_selection_ptr < ARRAY_SIZE(ozone->tab_selection))
+      ozone->tab_selection[ozone->categories_selection_ptr] = ozone->selection;
 
    ozone_sidebar_update_collapse(ozone, ozone_collapse_sidebar, true);
 
@@ -4667,10 +4789,20 @@ static void ozone_tab_set_selection(void *data)
    if (     ozone
          && !(ozone->flags2 & OZONE_FLAG2_LAST_POINTER_IN_SIDEBAR))
    {
-      size_t tab_selection = ozone->tab_selection[ozone->categories_selection_ptr];
+      size_t tab_selection =
+            (ozone->categories_selection_ptr < ARRAY_SIZE(ozone->tab_selection))
+            ? ozone->tab_selection[ozone->categories_selection_ptr]
+            : 0;
       if (tab_selection)
       {
          struct menu_state *menu_st = menu_state_get_ptr();
+         file_list_t *selection_buf = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+         /* a selection remembered from a longer list lands on its last
+          * entry, but not on a placeholder the finished read replaces */
+         if (!selection_buf || !selection_buf->size)
+            return;
+         tab_selection              = menu_entries_restorable_selection(
+               selection_buf, tab_selection);
          menu_st->selection_ptr     = tab_selection;
          ozone_selection_changed(ozone, false);
       }
@@ -4734,8 +4866,8 @@ static void ozone_free_node(ozone_node_t *node)
    if (!node)
       return;
 
-   /* Sidebar icons still uploading into it land nowhere */
-   gfx_display_texture_loads_cancel(node, sizeof(*node));
+   gfx_surface_free(node->icon);
+   gfx_surface_free(node->content_icon);
 
    if (node->console_name)
       free(node->console_name);
@@ -5016,10 +5148,14 @@ static void ozone_sidebar_goto(ozone_handle_t *ozone, size_t new_selection)
 
    /* Cursor animation */
    if (pointer_led)
+   {
       ozone->animations.cursor_alpha = 1.0f;
+      ozone->cursor_fade_started     = false;
+   }
    else
    {
       ozone->animations.cursor_alpha = 0.0f;
+      ozone->cursor_fade_started     = true;
 
       entry.cb             = NULL;
       entry.duration       = ANIMATION_CURSOR_DURATION;
@@ -5162,6 +5298,7 @@ static void ozone_refresh_sidebars(ozone_handle_t *ozone,
    if (ozone->depth == 1)
    {
       ozone->animations.cursor_alpha     = 1.0f;
+      ozone->cursor_fade_started         = false;
       ozone->animations.scroll_y_sidebar = ozone_sidebar_get_scroll_y(ozone, video_height);
    }
 
@@ -5299,9 +5436,10 @@ static void ozone_context_destroy_horizontal_list(ozone_handle_t *ozone)
 
       if (string_ends_with_size(path, ".lpl", strlen(path), STRLEN_CONST(".lpl")))
       {
-         gfx_display_texture_loads_cancel(node, sizeof(*node));
-         video_driver_texture_unload(&node->icon);
-         video_driver_texture_unload(&node->content_icon);
+         gfx_surface_free(node->icon);
+         gfx_surface_free(node->content_icon);
+         node->icon         = NULL;
+         node->content_icon = NULL;
       }
    }
 }
@@ -5313,8 +5451,8 @@ static ozone_node_t *ozone_alloc_node(void)
       return NULL;
    node->position_y     = 0;
    node->console_name   = NULL;
-   node->icon           = 0;
-   node->content_icon   = 0;
+   node->icon           = NULL;
+   node->content_icon   = NULL;
    node->fullpath       = NULL;
    /* Height, sublabel line count and wrap flag all live in attr;
     * zero the whole word so no field reads indeterminate bits. */
@@ -5329,9 +5467,6 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
    size_t list_size = ozone_list_get_size(ozone, MENU_LIST_HORIZONTAL);
 
    RHMAP_FREE(ozone->playlist_db_node_map);
-
-   /* Invalidate any in-flight async icon loads from a previous call */
-   ozone_icon_load_gen++;
 
    for (i = 0; i < list_size; i++)
    {
@@ -5374,9 +5509,9 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
                   sizeof(texturepath));
 
          /* Load sidebar playlist icons at once */
-         gfx_display_reset_icon_texture(
-               texturepath, &node->icon,
-               gfx_display_texture_filter());
+         gfx_surface_submit_file(gfx_surface_still(&node->icon,
+               gfx_display_texture_filter()),
+               texturepath, supports_rgba);
 
          strlcpy_lit(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
          fill_pathname_join_special(
@@ -5387,9 +5522,9 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
             fill_pathname_join_delim(texturepath, ozone->icons_path_default,
                   "content.png", '-', sizeof(texturepath));
 
-         gfx_display_load_icon(texturepath, supports_rgba,
-               &node->content_icon, ozone_icon_load_gen,
-               &ozone_icon_load_gen);
+         gfx_surface_submit_path(gfx_surface_still(&node->content_icon,
+               gfx_display_texture_filter()),
+               texturepath, supports_rgba);
 
          /* Console name */
          console_name = ozone->horizontal_list.list[i].alt
@@ -5416,7 +5551,6 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
          if (node->console_name)
             free(node->console_name);
          node->console_name = strdup(path + strlen(msg_hash_to_str(MENU_ENUM_LABEL_EXPLORE_VIEW)) + 2);
-         node->icon = ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_CURSOR];
       }
    }
 }
@@ -5539,7 +5673,12 @@ OZONE_NOINLINE static void ozone_draw_entry_value(
    /* Check icon */
    if (entry->flags & MENU_ENTRY_FLAG_CHECKED)
    {
+      uintptr_t check_texture = ozone->theme->name
+            ? GFX_SURFACE_HANDLE(ozone->theme->textures[OZONE_THEME_TEXTURE_CHECK])
+            : 0;
       float *col = ozone->theme_dynamic.entries_checkmark;
+      if (!check_texture)
+         check_texture = GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_CHECKMARK]);
       gfx_display_blend_begin(dispctx, userdata);
       ozone_draw_icon(
             p_disp,
@@ -5547,9 +5686,7 @@ OZONE_NOINLINE static void ozone_draw_entry_value(
             video_dims,
             30 * scale_factor,
             30 * scale_factor,
-            ozone->theme->name
-                  ? ozone->theme->textures[OZONE_THEME_TEXTURE_CHECK]
-                  : ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_CHECKMARK],
+            check_texture,
             x - 20 * scale_factor,
             y - 22 * scale_factor,
             0.0f,
@@ -5668,7 +5805,7 @@ static void ozone_draw_no_thumbnail_available(
                video_dims,
                icon_size,
                icon_size,
-               ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_IMAGE],
+               GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_IMAGE]),
                x_position + ((view_width - icon_size) / 2),
                video_height - y_position - icon_size - ((view_height - icon_size) / 2),
                0.0f,
@@ -5781,6 +5918,7 @@ static void ozone_update_scroll(ozone_handle_t *ozone,
    {
       /* Cursor animation */
       ozone->animations.cursor_alpha = 0.0f;
+      ozone->cursor_fade_started     = true;
 
       entry.cb             = NULL;
       entry.duration       = ANIMATION_CURSOR_DURATION;
@@ -5848,9 +5986,13 @@ static void ozone_compute_entries_position(ozone_handle_t *ozone,
    int sublabel_max_width        = 0;
    bool menu_current_sel_only    = menu_show_sublabels_current_selection_only;
    bool cursor_in_sidebar        = (ozone->flags & OZONE_FLAG_CURSOR_IN_SIDEBAR);
+   bool cursor_in_sidebar_old    = (ozone->flags & OZONE_FLAG_CURSOR_IN_SIDEBAR_OLD) ? true : false;
    bool draw_old_list            = (ozone->flags & OZONE_FLAG_DRAW_OLD_LIST);
    bool sidebar_at_target        = (ozone->sidebar_offset == (ozone->depth > 1 ? -ozone->dimensions_sidebar_width : 0.0f));
-   bool animate_scroll           = (menu_show_sublabels && menu_current_sel_only && !draw_old_list && sidebar_at_target);
+   bool selection_changed        = (ozone->selection != menu_st->selection_ptr);
+   bool animate_scroll           = (menu_show_sublabels && menu_current_sel_only
+         && !cursor_in_sidebar && !draw_old_list && sidebar_at_target
+         && ozone->cursor_fade_started);
    bool want_thumbnail_bar       = (ozone->flags & OZONE_FLAG_WANT_THUMBNAIL_BAR) ? true : false;
    bool show_thumbnail_bar       = ozone->show_thumbnail_bar;
 
@@ -5923,13 +6065,16 @@ static void ozone_compute_entries_position(ozone_handle_t *ozone,
             && (entries_end == 1))
       {
          uintptr_t tex;
+         uintptr_t icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_LAST];
          MENU_ENTRY_INITIALIZE(entry);
          entry.flags |= MENU_ENTRY_FLAG_SUBLABEL_ENABLED;
          menu_entry_get(&entry, 0, (unsigned)i, NULL, true);
 
-         tex = ozone_entries_icon_get_texture(ozone, ozone->icons_textures,
+         ozone_icons_snapshot(ozone->icons_textures, icons_tex,
+               OZONE_ENTRIES_ICONS_TEXTURE_LAST);
+         tex = ozone_entries_icon_get_texture(ozone, icons_tex,
                entry.enum_idx, entry.path, entry.label, entry.type, false);
-         if (tex == ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_CORE_INFO])
+         if (tex == icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_CORE_INFO])
             ozone->flags      |=  OZONE_FLAG_EMPTY_PLAYLIST;
          else
             ozone->flags      &= ~OZONE_FLAG_EMPTY_PLAYLIST;
@@ -6031,8 +6176,17 @@ compute_sublabel:
       }
    }
 
-   if (!menu_show_sublabels || !menu_current_sel_only || !cursor_in_sidebar)
+   if (   !menu_show_sublabels || !menu_current_sel_only || !cursor_in_sidebar
+       || selection_changed || cursor_in_sidebar_old)
+   {
       ozone_update_scroll(ozone, animate_scroll, (ozone_node_t*)selection_buf->list[ozone->selection].userdata);
+      if (   menu_show_sublabels && menu_current_sel_only && !cursor_in_sidebar
+          && !cursor_in_sidebar_old && !animate_scroll)
+      {
+         ozone->animations.cursor_alpha = 1.0f;
+         ozone->cursor_fade_started     = false;
+      }
+   }
 }
 
 static void ozone_draw_entries(
@@ -6403,8 +6557,8 @@ border_iterate:
                               ozone->categories_selection_ptr - ozone->system_tab_end - 1)
                   : NULL;
 
-            if (sidebar_node && sidebar_node->content_icon)
-               texture = sidebar_node->content_icon;
+            if (sidebar_node && GFX_SURFACE_HANDLE(sidebar_node->content_icon))
+               texture = GFX_SURFACE_HANDLE(sidebar_node->content_icon);
          }
          /* Playlist manager icons */
          else if (ozone->depth == 3 && e->enum_idx == MENU_ENUM_LABEL_PLAYLIST_MANAGER_SETTINGS)
@@ -6444,8 +6598,8 @@ border_iterate:
                sidebar_node = (offset < ozone->horizontal_list.size)
                      ? (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset)
                      : NULL;
-               if (sidebar_node && sidebar_node->icon)
-                  texture = sidebar_node->icon;
+               if (sidebar_node && GFX_SURFACE_HANDLE(sidebar_node->icon))
+                  texture = GFX_SURFACE_HANDLE(sidebar_node->icon);
             }
          }
          /* "Main Menu" playlists */
@@ -6469,23 +6623,23 @@ border_iterate:
                      switch (show_history_icons)
                      {
                         case PLAYLIST_SHOW_HISTORY_ICONS_MAIN:
-                           texture = db_node->icon;
+                           texture = GFX_SURFACE_HANDLE(db_node->icon);
                            break;
                         case PLAYLIST_SHOW_HISTORY_ICONS_CONTENT:
-                           texture = db_node->content_icon;
+                           texture = GFX_SURFACE_HANDLE(db_node->content_icon);
                            break;
                         default:
                            break;
                      }
                   }
                   else
-                     texture = db_node->content_icon;
+                     texture = GFX_SURFACE_HANDLE(db_node->content_icon);
                }
             }
             else if (ozone->depth == 2 && e->type == FILE_TYPE_PLAYLIST_COLLECTION)
             {
                ozone_node_t *sidebar_node = NULL;
-               unsigned offset            = old_list ? ozone->entries_old[i].entry_idx : selection_buf->list[i].entry_idx;
+               size_t offset              = old_list ? ozone->entries_old[i].entry_idx : selection_buf->list[i].entry_idx;
 
                /* Search for sorted icon order */
                if (((video_info->menu.flags & VIDEO_MENU_FLAG_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME) ? true : false))
@@ -6513,8 +6667,8 @@ border_iterate:
                      ? (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset)
                      : NULL;
 
-               if (sidebar_node && sidebar_node->icon)
-                  texture = sidebar_node->icon;
+               if (sidebar_node && GFX_SURFACE_HANDLE(sidebar_node->icon))
+                  texture = GFX_SURFACE_HANDLE(sidebar_node->icon);
             }
          }
          /* History/Favorite console specific content icons */
@@ -6540,10 +6694,10 @@ border_iterate:
                         switch (show_history_icons)
                         {
                            case PLAYLIST_SHOW_HISTORY_ICONS_MAIN:
-                              texture = db_node->icon;
+                              texture = GFX_SURFACE_HANDLE(db_node->icon);
                               break;
                            case PLAYLIST_SHOW_HISTORY_ICONS_CONTENT:
-                              texture = db_node->content_icon;
+                              texture = GFX_SURFACE_HANDLE(db_node->content_icon);
                               break;
                            default:
                               break;
@@ -7334,7 +7488,7 @@ static void ozone_draw_thumbnail_bar(
                      video_dims,
                      icon_size,
                      icon_size,
-                     ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_IMAGE],
+                     GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_IMAGE]),
                      x_position + sidebar_width - separator_padding - icon_size,
                      video_height - ozone->dimensions.footer_height - ozone->dimensions.sidebar_entry_icon_padding - icon_size,
                      0.0f,
@@ -7387,7 +7541,9 @@ OZONE_NOINLINE static void ozone_draw_osk(
    unsigned video_height = VIDEO_SCALE_H(video_dims);
    char message[2048];
    gfx_display_t *p_disp          = (gfx_display_t*)disp_userdata;
-   input_driver_state_t *input_st = input_state_get_ptr();
+   size_t line_cursor             = 0;
+   const char *line_text          = input_driver_keyboard_line_view(&line_cursor);
+   struct menu_state *menu_st     = menu_state_get_ptr();
    const char *text               = str;
    unsigned text_color            = 0xffffffff;
    float ozone_osk_backdrop[16] = {
@@ -7405,6 +7561,8 @@ OZONE_NOINLINE static void ozone_draw_osk(
    unsigned bottom_end            = video_height / 2;
    unsigned y_offset              = 0;
    bool draw_placeholder          = !str || !*str;
+   bool text_selected             = input_driver_keyboard_line_selected();
+   float selection_color[16];
    unsigned cursor_line           = 0;
    int cursor_x                   = -2;
    retro_time_t current_time      = menu_driver_get_current_time();
@@ -7495,7 +7653,7 @@ OZONE_NOINLINE static void ozone_draw_osk(
       text_color  = ozone_theme_light.text_sublabel_rgba;
    }
 
-   if (input_st->osk_textbox_focus)
+   if (input_driver_keyboard_textbox_focus())
    {
       float cursor_color[16];
       int cursor_s = ozone->dimensions.spacer_5px;
@@ -7528,14 +7686,12 @@ OZONE_NOINLINE static void ozone_draw_osk(
       }
    }
 
-   if (!draw_placeholder && input_st->keyboard_line.buffer)
+   if (!draw_placeholder && line_text)
    {
       char cursor_src[2048];
       char cursor_message[2048];
-      size_t ptr = input_st->keyboard_line.ptr;
+      size_t ptr = line_cursor;
 
-      if (ptr > input_st->keyboard_line.size)
-         ptr = input_st->keyboard_line.size;
       if (ptr >= sizeof(cursor_src))
          ptr = sizeof(cursor_src) - 1;
 
@@ -7544,7 +7700,7 @@ OZONE_NOINLINE static void ozone_draw_osk(
        * (in-place use aborts under fortified strlcpy on
        * macOS and corrupts wide glyphs in the wideglyph
        * variant), so stage the source separately */
-      memcpy(cursor_src, input_st->keyboard_line.buffer, ptr);
+      memcpy(cursor_src, line_text, ptr);
       cursor_src[ptr] = '\0';
       (ozone->word_wrap)(cursor_message,
             sizeof(cursor_message),
@@ -7573,6 +7729,9 @@ OZONE_NOINLINE static void ozone_draw_osk(
    if (cursor_line >= list_size)
       cursor_line = list_size - 1;
 
+   memcpy(selection_color, ozone->theme_dynamic.cursor_border, sizeof(selection_color));
+   gfx_display_set_alpha(selection_color, 0.35f);
+
    for (line = message; line; line = next ? next + 1 : NULL)
    {
       char line_buf[2048];
@@ -7589,6 +7748,17 @@ OZONE_NOINLINE static void ozone_draw_osk(
 
       memcpy(line_buf, line, _len);
       line_buf[_len] = '\0';
+
+      if (text_selected && !draw_placeholder && _len)
+         gfx_display_draw_quad(p_disp, userdata, video_dims,
+               margin + (padding * 2),
+               margin + padding + y_offset
+                     + ozone->fonts.entries_label.line_height
+                     - ozone->fonts.entries_label.line_ascender,
+               VIDEO_SCALE_PACK(font_driver_get_message_width(
+                     ozone->fonts.entries_label.font, line_buf, _len, 1.0f),
+                     ozone->fonts.entries_label.line_ascender),
+               video_dims, selection_color, NULL);
 
       gfx_display_draw_text(
             ozone->fonts.entries_label.font,
@@ -7608,7 +7778,8 @@ OZONE_NOINLINE static void ozone_draw_osk(
             false);
 
       /* Cursor/caret */
-      if ((i == cursor_line) && (ozone->flags & OZONE_FLAG_OSK_CURSOR))
+      if (!text_selected && (i == cursor_line)
+            && (ozone->flags & OZONE_FLAG_OSK_CURSOR))
          gfx_display_draw_quad(
                p_disp,
                userdata,
@@ -7636,16 +7807,19 @@ OZONE_NOINLINE static void ozone_draw_osk(
 
    /* Keyboard */
    {
+      uintptr_t cursor_texture = ozone->theme->name
+            ? GFX_SURFACE_HANDLE(ozone->theme->textures[OZONE_THEME_TEXTURE_CURSOR_STATIC])
+            : 0;
+      if (!cursor_texture)
+         cursor_texture = GFX_SURFACE_HANDLE(ozone->textures[OZONE_TEXTURE_CURSOR_BORDER]);
       gfx_display_draw_keyboard(
             p_disp,
             userdata,
             video_dims,
-            ozone->theme->name
-                  ? ozone->theme->textures[OZONE_THEME_TEXTURE_CURSOR_STATIC]
-                  : ozone->textures[OZONE_TEXTURE_CURSOR_BORDER],
+            cursor_texture,
             ozone->fonts.entries_label.font,
-            input_st->osk_grid,
-            input_st->osk_textbox_focus ? 44 : input_st->osk_ptr,
+            menu_st->osk_grid,
+            input_driver_keyboard_textbox_focus() ? 44 : menu_st->osk_ptr,
             ozone->theme->text_rgba);
    }
 }
@@ -7820,7 +7994,7 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
             ozone->theme_dynamic.message_background,
             16,
             scale_factor,
-            ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_DIALOG_SLICE],
+            GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_DIALOG_SLICE]),
             mymat
             );
 
@@ -7864,10 +8038,10 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
       gfx_display_set_alpha(col, 0.25f);
 
       /* Back */
-      if (     ozone->pointer.x >= cursor_x
-            && ozone->pointer.x <= cursor_x + cursor_w
-            && ozone->pointer.y >= cursor_y
-            && ozone->pointer.y <= cursor_y + cursor_h)
+      if (     VIDEO_POS_X(ozone->pointer.pos) >= cursor_x
+            && VIDEO_POS_X(ozone->pointer.pos) <= cursor_x + cursor_w
+            && VIDEO_POS_Y(ozone->pointer.pos) >= cursor_y
+            && VIDEO_POS_Y(ozone->pointer.pos) <= cursor_y + cursor_h)
       {
          menu_st->dialog_st.confirm_hover_back = true;
 
@@ -7895,8 +8069,8 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
             icon_size,
             icon_size,
             input_menu_swap_ok_cancel_buttons
-                  ? ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_R]
-                  : ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_D],
+                  ? GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_R])
+                  : GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_D]),
             icon_x,
             icon_y,
             0.0f,
@@ -7925,10 +8099,10 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
       cursor_x = icon_x - icon_padding;
       cursor_w = icon_size + (icon_padding * 4) + ozone->footer_labels.ok.width;
 
-      if (     ozone->pointer.x >= cursor_x
-            && ozone->pointer.x <= cursor_x + cursor_w
-            && ozone->pointer.y >= cursor_y
-            && ozone->pointer.y <= cursor_y + cursor_h)
+      if (     VIDEO_POS_X(ozone->pointer.pos) >= cursor_x
+            && VIDEO_POS_X(ozone->pointer.pos) <= cursor_x + cursor_w
+            && VIDEO_POS_Y(ozone->pointer.pos) >= cursor_y
+            && VIDEO_POS_Y(ozone->pointer.pos) <= cursor_y + cursor_h)
       {
          menu_st->dialog_st.confirm_hover_ok = true;
 
@@ -7956,8 +8130,8 @@ OZONE_NOINLINE static void ozone_draw_messagebox(
             icon_size,
             icon_size,
             input_menu_swap_ok_cancel_buttons
-                  ? ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_D]
-                  : ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_R],
+                  ? GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_D])
+                  : GFX_SURFACE_HANDLE(ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_BTN_R]),
             icon_x,
             icon_y,
             0.0f,
@@ -8770,6 +8944,20 @@ static bool ozone_manage_available(ozone_handle_t *ozone,
    return false;
 }
 
+/* A combination's row is selected (input_combo_1 and up): Left and
+ * Right do something on it, and the footer says what. */
+static bool ozone_combo_row_selected(size_t selection)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   file_list_t *list          = menu_st->entries.list
+      ? MENU_LIST_GET_SELECTION(menu_st->entries.list, 0) : NULL;
+   const char *label;
+   if (!list || selection >= list->size || !(label = list->list[selection].label))
+      return false;
+   return    !strncmp(label, "input_combo_", 12)
+          && label[12] >= '1' && label[12] <= '9';
+}
+
 static bool ozone_is_current_entry_settings(size_t current_selection)
 {
    menu_entry_t last_entry;
@@ -8932,8 +9120,6 @@ static enum menu_action ozone_parse_menu_entry_action(
    enum menu_action new_action    = action;
    file_list_t *selection_buf     = NULL;
    unsigned horizontal_list_size  = 0;
-   bool menu_show_sublabels       = settings->bools.menu_show_sublabels;
-   bool menu_current_sel_only     = settings->bools.menu_show_sublabels_current_selection_only;
 
    /* We have to override the thumbnail stream
     * delay when opening the thumbnail sidebar;
@@ -9036,7 +9222,9 @@ static enum menu_action ozone_parse_menu_entry_action(
                   NULL,
                   MENU_ENUM_LABEL_PLAYLIST_MANAGER_SETTINGS_STR,
                   MENU_SETTING_ACTION,
-                  ozone->tab_selection[ozone->categories_selection_ptr],
+                  (ozone->categories_selection_ptr < ARRAY_SIZE(ozone->tab_selection))
+                  ? ozone->tab_selection[ozone->categories_selection_ptr]
+                  : 0,
                   0,
                   ACTION_OK_DL_PLAYLIST_MANAGER_SETTINGS);
 
@@ -9070,8 +9258,6 @@ static enum menu_action ozone_parse_menu_entry_action(
             ozone_hide_fullscreen_thumbnails(ozone, true);
             new_action     = MENU_ACTION_NOOP;
          }
-         if ((new_action == MENU_ACTION_START) && menu_show_sublabels && menu_current_sel_only)
-            ozone->selection_old = ozone->selection;
          break;
       case MENU_ACTION_SCAN:
          if (ozone->flags & OZONE_FLAG_CURSOR_IN_SIDEBAR)
@@ -9464,7 +9650,8 @@ static enum menu_action ozone_parse_menu_entry_action(
             else
             {
                /* Jump to first item on Main Menu */
-               ozone->tab_selection[ozone->categories_selection_ptr] = 0;
+               if (ozone->categories_selection_ptr < ARRAY_SIZE(ozone->tab_selection))
+                  ozone->tab_selection[ozone->categories_selection_ptr] = 0;
                menu_st->selection_ptr = 0;
             }
 
@@ -9813,6 +10000,7 @@ static void *ozone_init(void **userdata, bool video_is_threaded)
    if (!(ozone = (ozone_handle_t*)calloc(1, sizeof(ozone_handle_t))))
       goto error;
 
+   retro_atomic_ptr_init(&ozone->pending_theme, NULL);
    *userdata = ozone;
 
    for (i = 0; i < 16; i++)
@@ -9875,8 +10063,6 @@ static void *ozone_init(void **userdata, bool video_is_threaded)
     * for Ozone, we should refactor this dependency
     * away. */
    p_disp->framebuf_dims   = out_dims;
-
-   gfx_display_init_white_texture();
 
    ozone->horizontal_list.list                  = NULL;
    ozone->horizontal_list.capacity              = 0;
@@ -9990,12 +10176,7 @@ static void ozone_free(void *data)
 
    if (ozone)
    {
-      /* Theme textures still uploading land nowhere */
-      gfx_display_texture_loads_cancel(ozone, sizeof(*ozone));
-      /* Invalidate any in-flight async icon loads before freeing
-       * the nodes they would write into */
-      ozone_icon_load_gen++;
-      ozone_ctx_icon_load_gen++;
+      ozone_free_context_textures(ozone);
 
       video_coord_array_free(&ozone->fonts.footer.raster_block.carr);
       video_coord_array_free(&ozone->fonts.title.raster_block.carr);
@@ -10019,8 +10200,6 @@ static void ozone_free(void *data)
 
       menu_screensaver_free(ozone->screensaver);
    }
-
-   gfx_display_deinit_white_texture();
 }
 
 static void ozone_update_thumbnail_image(void *data)
@@ -10268,6 +10447,14 @@ static void ozone_cache_footer_labels(ozone_handle_t *ozone)
          &ozone->footer_labels.manage,
          MENU_ENUM_LABEL_VALUE_MANAGE);
 
+   ozone_cache_footer_label(ozone,
+         &ozone->footer_labels.combo_left,
+         MSG_INPUT_COMBO_CHOOSE_ACTION);
+
+   ozone_cache_footer_label(ozone,
+         &ozone->footer_labels.combo_right,
+         MSG_INPUT_COMBO_SET_BUTTONS);
+
    /* Record current language setting */
    ozone->footer_labels_language = *msg_hash_get_uint(MSG_HASH_USER_LANGUAGE);
 }
@@ -10473,31 +10660,37 @@ static void ozone_set_layout(
    ozone->flags |= OZONE_FLAG_NEED_COMPUTE;
 }
 
+/* Request again the thumbnails unloaded by the content switch. As
+ * content starts they are decoded and parked: the bar is not shown
+ * while it runs, so they upload when shown, or when it closes, from
+ * the parked image. The pending bits stay set for that. */
+static void ozone_thumbnails_reload(ozone_handle_t *ozone)
+{
+   settings_t *settings                 = config_get_ptr();
+   unsigned upscale_threshold           =
+         settings->uints.gfx_thumbnail_upscale_threshold;
+   gfx_thumbnail_path_data_t *path_data =
+         menu_state_get_ptr()->thumbnail_path_data;
+
+   gfx_thumbnail_park_requests(runloop_content_loaded());
+   if (ozone->thumbnails.pending & OZONE_PENDING_THUMBNAIL_RIGHT)
+      gfx_thumbnail_request(path_data, GFX_THUMBNAIL_RIGHT, NULL, 0,
+            &ozone->thumbnails.right, upscale_threshold, false);
+   if (ozone->thumbnails.pending & OZONE_PENDING_THUMBNAIL_LEFT)
+      gfx_thumbnail_request(path_data, GFX_THUMBNAIL_LEFT, NULL, 0,
+            &ozone->thumbnails.left, upscale_threshold, false);
+   gfx_thumbnail_flush_requests();
+   gfx_thumbnail_park_requests(false);
+}
+
 static void ozone_context_reset(void *data, bool is_threaded)
 {
-   static const char *OZONE_TAB_TEXTURES_FILES[OZONE_TAB_TEXTURE_LAST] = {
-      "retroarch.png", /* MAIN_MENU */
-      "settings.png",  /* SETTINGS_TAB */
-      "history.png",   /* HISTORY_TAB */
-      "favorites.png", /* FAVORITES_TAB */
-      "image.png",     /* IMAGES_TAB */
-      "music.png",     /* MUSIC_TAB */
-      "video.png",     /* VIDEO_TAB */
-      "netplay.png",   /* NETPLAY_TAB */
-      "add.png",       /* ADD_TAB */
-      "core.png",      /* CONTENTLESS_CORES_TAB */
-      "database.png"   /* EXPLORE_TAB */
-   };
-   static const char *OZONE_TEXTURES_FILES[OZONE_TEXTURE_LAST]         = {
-      "retroarch.png",
-      "cursor_border.png"
-   };
-   unsigned i;
    ozone_handle_t *ozone      = (ozone_handle_t*) data;
 
    if (ozone)
    {
       settings_t *settings = config_get_ptr();
+      bool supports_rgba   = gfx_surface_wants_rgba();
 
       ozone->flags |= OZONE_FLAG_HAS_ALL_ASSETS;
 
@@ -10507,59 +10700,26 @@ static void ozone_context_reset(void *data, bool is_threaded)
       ozone_set_layout(ozone, settings->paths.directory_assets,
             settings->bools.ozone_collapse_sidebar, is_threaded);
 
-      /* Invalidate in-flight context texture loads */
-      ozone_ctx_icon_load_gen++;
-
       /* Textures init */
-      for (i = 0; i < OZONE_TEXTURE_LAST; i++)
-      {
-         char texpath[PATH_MAX_LENGTH];
-         fill_pathname_join_special(texpath,
-               ozone->png_path, OZONE_TEXTURES_FILES[i],
-               sizeof(texpath));
-         gfx_display_reset_icon_texture(texpath,
-               &ozone->textures[i], gfx_display_texture_filter());
-      }
+      gfx_surface_submit_named(ozone->textures, OZONE_TEXTURE_LAST,
+            gfx_display_texture_filter(), ozone_texture_path, ozone,
+            supports_rgba);
 
       /* Sidebar textures */
-      for (i = 0; i < OZONE_TAB_TEXTURE_LAST; i++)
-      {
-         char texpath[PATH_MAX_LENGTH];
-         switch (i)
-         {
-            /* Exceptions for icons that don't exist in 'png/sidebar/' */
-            case OZONE_TAB_TEXTURE_CONTENTLESS_CORES:
-            case OZONE_TAB_TEXTURE_EXPLORE:
-               fill_pathname_join_special(texpath,
-                     ozone->icons_path, OZONE_TAB_TEXTURES_FILES[i],
-                     sizeof(texpath));
-               break;
-            default:
-               fill_pathname_join_special(texpath,
-                     ozone->tab_path, OZONE_TAB_TEXTURES_FILES[i],
-                     sizeof(texpath));
-               break;
-         }
-         gfx_display_reset_icon_texture(texpath,
-               &ozone->tab_textures[i], gfx_display_texture_filter());
-      }
+      gfx_surface_submit_named(ozone->tab_textures, OZONE_TAB_TEXTURE_LAST,
+            gfx_display_texture_filter(), ozone_tab_texture_path, ozone,
+            supports_rgba);
 
       /* Theme textures */
-      ozone_reset_theme_textures(ozone);
+      ozone_unload_theme_textures(ozone);
+      ozone_make_theme_surfaces();
+      (void)retro_atomic_exchange_ptr(&ozone->pending_theme, NULL);
+      ozone_load_theme_textures(ozone, ozone->theme);
 
       /* Icons textures init */
-      for (i = 0; i < OZONE_ENTRIES_ICONS_TEXTURE_LAST; i++)
-      {
-         char texpath[PATH_MAX_LENGTH];
-         fill_pathname_join_special(texpath,
-               ozone->icons_path, ozone_entries_icon_texture_path(i),
-               sizeof(texpath));
-         gfx_display_reset_icon_texture(texpath,
-               &ozone->icons_textures[i], gfx_display_texture_filter());
-      }
-
-      gfx_display_deinit_white_texture();
-      gfx_display_init_white_texture();
+      gfx_surface_submit_named(ozone->icons_textures,
+            OZONE_ENTRIES_ICONS_TEXTURE_LAST, gfx_display_texture_filter(),
+            ozone_entries_icon_path, ozone, supports_rgba);
 
       /* Horizontal list */
       ozone_context_reset_horizontal_list(ozone);
@@ -10578,6 +10738,7 @@ static void ozone_context_reset(void *data, bool is_threaded)
 
       /* Animations */
       ozone->animations.cursor_alpha      = 1.0f;
+      ozone->cursor_fade_started          = false;
       ozone->animations.scroll_y          = 0.0f;
       ozone->animations.list_alpha        = 1.0f;
       ozone->animations.alpha             = 1.0f;
@@ -10587,7 +10748,10 @@ static void ozone_context_reset(void *data, bool is_threaded)
       ozone->pending_message              = NULL;
 
       /* Thumbnails */
-      ozone_update_thumbnail_image(ozone);
+      if (!runloop_is_content_switching())
+         ozone_update_thumbnail_image(ozone);
+      else
+         ozone_thumbnails_reload(ozone);
       ozone_update_savestate_thumbnail_image(ozone);
 
       /* Header icon */
@@ -10630,47 +10794,53 @@ static INLINE void ozone_font_free(font_data_impl_t *font_data)
    font_data->font = NULL;
 }
 
+/* The content switch unloads what is on the GPU and marks it pending
+ * for ozone_thumbnails_reload. A still not yet landed is not
+ * cancelled: the destroy and the reset run back to back in one
+ * driver reinit on the main thread, where task callbacks also run,
+ * so it lands after the reset, into the new context. */
+static void ozone_thumbnails_unload(ozone_handle_t *ozone)
+{
+   gfx_thumbnail_t *right = &ozone->thumbnails.right;
+   gfx_thumbnail_t *left  = &ozone->thumbnails.left;
+
+   if (right->anim_surface || right->anim || right->anim_player)
+   {
+      gfx_thumbnail_reset(right);
+      ozone->thumbnails.pending = (enum ozone_pending_thumbnail_type)
+            (ozone->thumbnails.pending | OZONE_PENDING_THUMBNAIL_RIGHT);
+   }
+   if (left->anim_surface || left->anim || left->anim_player)
+   {
+      gfx_thumbnail_reset(left);
+      ozone->thumbnails.pending = (enum ozone_pending_thumbnail_type)
+            (ozone->thumbnails.pending | OZONE_PENDING_THUMBNAIL_LEFT);
+   }
+   gfx_thumbnail_reset(&ozone->thumbnails.savestate);
+}
+
 static void ozone_context_destroy(void *data)
 {
-   unsigned i;
    uintptr_t tag;
    ozone_handle_t *ozone = (ozone_handle_t*) data;
 
    if (!ozone)
       return;
 
-   /* Theme textures still uploading land nowhere */
-   gfx_display_texture_loads_cancel(ozone, sizeof(*ozone));
-
    /* Signal the render path to stop using textures/fonts.
     * Under threaded video, ozone_frame() may be mid-render on
     * the video thread when this runs on the main thread. */
    ozone->context_generation++;
+   (void)retro_atomic_exchange_ptr(&ozone->pending_theme, NULL);
 
-   /* Invalidate in-flight async icon loads before unloading */
-   ozone_icon_load_gen++;
-   ozone_ctx_icon_load_gen++;
-
-   /* Theme */
    ozone_unload_theme_textures(ozone);
-
-   /* Icons */
-   ozone->header_icon = 0;
-   for (i = 0; i < OZONE_ENTRIES_ICONS_TEXTURE_LAST; i++)
-      video_driver_texture_unload(&ozone->icons_textures[i]);
-
-   /* Textures */
-   for (i = 0; i < OZONE_TEXTURE_LAST; i++)
-      video_driver_texture_unload(&ozone->textures[i]);
-
-   /* Icons */
-   for (i = 0; i < OZONE_TAB_TEXTURE_LAST; i++)
-      video_driver_texture_unload(&ozone->tab_textures[i]);
+   ozone_free_context_textures(ozone);
 
    /* Thumbnails */
-   ozone_unload_thumbnail_textures(ozone);
-
-   gfx_display_deinit_white_texture();
+   if (runloop_is_content_switching())
+      ozone_thumbnails_unload(ozone);
+   else
+      ozone_unload_thumbnail_textures(ozone);
 
    /* Fonts */
    ozone_font_free(&ozone->fonts.footer);
@@ -10849,6 +11019,20 @@ static void ozone_render(void *data,
       ozone->flags2 &= ~OZONE_FLAG2_COLOR_THEME_WRITE_PENDING;
    }
 
+   if (retro_atomic_load_acquire_ptr(&ozone->pending_theme))
+   {
+      ozone_theme_t *pending_theme = (ozone_theme_t*)retro_atomic_exchange_ptr(
+            &ozone->pending_theme, NULL);
+      if (pending_theme)
+         ozone_load_theme_textures(ozone, pending_theme);
+   }
+
+   /* The header icon's handle is a surface's, which a replacement or a
+    * free retires: taken again then, before the frame can draw it */
+   if (     ozone->header_icon
+         && ozone->header_retired != gfx_surface_retired())
+      ozone_set_header_icon(ozone, settings->uints.menu_ozone_header_icon);
+
    /* Advance animated thumbnails (animated WebP) once per frame on the
     * main thread. No-op for still images. */
    gfx_thumbnail_animate(&ozone->thumbnails.right,
@@ -10902,6 +11086,21 @@ static void ozone_render(void *data,
             ozone_collapse_sidebar,
             video_driver_is_threaded());
       video_driver_monitor_reset();
+   }
+
+   /* Reset thumbnail bar when starting/closing content */
+   if (((ozone->flags & OZONE_FLAG_LIBRETRO_RUNNING) > 0) != runloop_content_loaded())
+   {
+      ozone->flags ^= OZONE_FLAG_LIBRETRO_RUNNING;
+      ozone->flags |= OZONE_FLAG_NEED_COMPUTE;
+
+      if ((ozone->flags2 & OZONE_FLAG2_IS_QUICK_MENU) && !runloop_is_content_switching())
+      {
+         if (ozone->flags & OZONE_FLAG_LIBRETRO_RUNNING)
+            ozone->flags &= ~(OZONE_FLAG_WANT_THUMBNAIL_BAR | OZONE_FLAG_FULLSCREEN_THUMBNAILS_AVAILABLE);
+         else
+            ozone->flags |=  (OZONE_FLAG_WANT_THUMBNAIL_BAR | OZONE_FLAG_FULLSCREEN_THUMBNAILS_AVAILABLE);
+      }
    }
 
    if (menu_show_sublabels && menu_current_sel_only && (ozone->selection != menu_st->selection_ptr))
@@ -10967,6 +11166,7 @@ static void ozone_render(void *data,
             ozone->theme->screensaver_tint,
             dims,
             settings->paths.directory_assets);
+      ozone->cursor_fade_started = false;
       GFX_ANIMATION_CLEAR_ACTIVE(p_anim);
       return;
    }
@@ -10981,8 +11181,10 @@ static void ozone_render(void *data,
        *   becomes impossible... */
       if (ozone->pointer.type == MENU_POINTER_MOUSE)
       {
-         int16_t cursor_x_delta = ozone->pointer.x - ozone->cursor_x_old;
-         int16_t cursor_y_delta = ozone->pointer.y - ozone->cursor_y_old;
+         int16_t cursor_x_delta = VIDEO_POS_X(ozone->pointer.pos)
+            - VIDEO_POS_X(ozone->cursor_pos_old);
+         int16_t cursor_y_delta = VIDEO_POS_Y(ozone->pointer.pos)
+            - VIDEO_POS_Y(ozone->cursor_pos_old);
 
          if (   (cursor_x_delta >  ozone->pointer_active_delta)
              || (cursor_x_delta < -ozone->pointer_active_delta)
@@ -10994,8 +11196,7 @@ static void ozone_render(void *data,
       /* On touchscreens, just check for any movement */
       else
       {
-         if (   (ozone->pointer.x != ozone->cursor_x_old)
-             || (ozone->pointer.y != ozone->cursor_y_old))
+         if (ozone->pointer.pos != ozone->cursor_pos_old)
             ozone->flags |=  OZONE_FLAG_CURSOR_MODE;
       }
    }
@@ -11007,8 +11208,7 @@ static void ozone_render(void *data,
          || (menu_driver_get_current_time() - ozone->cursor_old_time
             > CURSOR_ACTIVE_WINDOW))
    {
-      ozone->cursor_x_old    = ozone->pointer.x;
-      ozone->cursor_y_old    = ozone->pointer.y;
+      ozone->cursor_pos_old  = ozone->pointer.pos;
       ozone->cursor_old_time = menu_driver_get_current_time();
    }
 
@@ -11075,7 +11275,7 @@ static void ozone_render(void *data,
            || (ozone->pointer.flags & MENU_INP_PTR_FLG_PRESSED))
       {
          if ((ozone->flags & OZONE_FLAG_DRAW_SIDEBAR)
-               && (ozone->pointer.x < ozone->dimensions_sidebar_width
+               && (VIDEO_POS_X(ozone->pointer.pos) < ozone->dimensions_sidebar_width
                 +  ozone->sidebar_offset))
             ozone->flags2 |=  OZONE_FLAG2_POINTER_IN_SIDEBAR;
          else
@@ -11255,10 +11455,10 @@ static void ozone_render(void *data,
          {
             /* Check whether pointer is within the bounds
              * of the current entry */
-            if (     (ozone->pointer.x > entry_x)
-                  && (ozone->pointer.x < entry_x + entry_width)
-                  && (ozone->pointer.y > entry_y)
-                  && (ozone->pointer.y < entry_y + OZONE_NODE_HEIGHT(node)))
+            if (     (VIDEO_POS_X(ozone->pointer.pos) > entry_x)
+                  && (VIDEO_POS_X(ozone->pointer.pos) < entry_x + entry_width)
+                  && (VIDEO_POS_Y(ozone->pointer.pos) > entry_y)
+                  && (VIDEO_POS_Y(ozone->pointer.pos) < entry_y + OZONE_NODE_HEIGHT(node)))
             {
                /* Pointer selection is always updated */
                menu_input->ptr = (unsigned)i;
@@ -11383,8 +11583,8 @@ static void ozone_render(void *data,
             /* If pointer is within the bounds of the
              * current category, cache category index
              * (for use in next 'pointer up' event) */
-            if (     (ozone->pointer.y > category_y)
-                  && (ozone->pointer.y < category_y + category_height))
+            if (     (VIDEO_POS_Y(ozone->pointer.pos) > category_y)
+                  && (VIDEO_POS_Y(ozone->pointer.pos) < category_y + category_height))
             {
                ozone->pointer_categories_selection = i;
                ozone->flags2 |= OZONE_FLAG2_POINTER_ON_CATEGORY;
@@ -11475,7 +11675,11 @@ static void ozone_render(void *data,
    if (i >= entries_end)
       menu_st->entries.begin = 0;
 
+   ozone->cursor_fade_started = false;
    GFX_ANIMATION_CLEAR_ACTIVE(p_anim);
+
+   /* The frame's thumbnail requests go out together */
+   gfx_thumbnail_flush_requests();
 }
 
 OZONE_NOINLINE static void ozone_draw_header(
@@ -11497,6 +11701,7 @@ OZONE_NOINLINE static void ozone_draw_header(
    gfx_animation_ctx_ticker_smooth_t ticker_smooth;
    unsigned ticker_x_offset                 = 0;
    unsigned timedate_offset                 = 0;
+   uintptr_t header_icon                    = ozone->header_icon;
    bool use_smooth_ticker                   = ((video_info->menu.flags & VIDEO_MENU_FLAG_TICKER_SMOOTH) ? true : false);
    float *col                               = ozone->theme->entries_icon;
    float scale_factor                       = ozone->last_scale_factor;
@@ -11510,16 +11715,15 @@ OZONE_NOINLINE static void ozone_draw_header(
    enum gfx_animation_ticker_type menu_ticker_type;
    gfx_display_ctx_driver_t *dispctx;
 
-   /* If header_icon is zero but the setting says it should exist,
-    * the handle was likely cached before its async texture loaded.
-    * Try the RetroArch logo as a fallback — it covers FIXED mode
-    * and the DYNAMIC mode fallback at the end of ozone_selection_changed. */
-   if (  !ozone->header_icon
-       && video_info->menu.ozone_header_icon != OZONE_HEADER_ICON_NONE
-       && ozone_tex[OZONE_TEXTURE_RETROARCH])
-      ozone->header_icon = ozone_tex[OZONE_TEXTURE_RETROARCH];
+   /* No header icon yet while the setting wants one: the RetroArch
+    * logo of this frame's own textures. Not kept: under threaded video
+    * this runs on the video thread, and a kept handle outlives the
+    * textures a context reset frees after this frame. */
+   if (  !header_icon
+       && video_info->menu.ozone_header_icon != OZONE_HEADER_ICON_NONE)
+      header_icon = ozone_tex[OZONE_TEXTURE_RETROARCH];
 
-   logo_icon_size                           = (ozone->header_icon) ? 60 * scale_factor : 0;
+   logo_icon_size                           = (header_icon) ? 60 * scale_factor : 0;
    status_row_size                          = 160 * scale_factor;
    separator_margin                         = 30 * scale_factor;
    separator                                = video_info->menu.ozone_header_separator;
@@ -11577,7 +11781,7 @@ OZONE_NOINLINE static void ozone_draw_header(
                video_dims,
                logo_icon_size,
                logo_icon_size,
-               ozone->header_icon,
+               header_icon,
                header_margin - (logo_icon_size / 12),
                (ozone->dimensions.header_height - logo_icon_size) / 2,
                0.0f,
@@ -11816,6 +12020,12 @@ static void ozone_draw_footer(
             !ozone->footer_labels.fullscreen_thumbnails.show
          && ozone_is_current_entry_settings(selection);
 
+   ozone->footer_labels.combo_right.show           =
+            !ozone->footer_labels.fullscreen_thumbnails.show
+         && ozone_combo_row_selected(selection);
+   ozone->footer_labels.combo_left.show            =
+         ozone->footer_labels.combo_right.show;
+
    ozone->footer_labels.help.show                  =
             !ozone->footer_labels.metadata_override.show
          && ozone_help_available(ozone, selection, ((video_info->menu.flags & VIDEO_MENU_FLAG_SHOW_SUBLABELS) ? true : false));
@@ -11899,9 +12109,17 @@ static void ozone_draw_footer(
          ? ozone->footer_labels.clear_setting.x - ozone->footer_labels.scan.width - icon_spacer
          : ozone->footer_labels.clear_setting.x;
 
-   ozone->footer_labels.reset_to_default.x      = (ozone->footer_labels.reset_to_default.show)
-         ? ozone->footer_labels.scan.x - ozone->footer_labels.reset_to_default.width - icon_spacer
+   ozone->footer_labels.combo_right.x           = (ozone->footer_labels.combo_right.show)
+         ? ozone->footer_labels.scan.x - ozone->footer_labels.combo_right.width - icon_spacer
          : ozone->footer_labels.scan.x;
+
+   ozone->footer_labels.combo_left.x            = (ozone->footer_labels.combo_left.show)
+         ? ozone->footer_labels.combo_right.x - ozone->footer_labels.combo_left.width - icon_spacer
+         : ozone->footer_labels.combo_right.x;
+
+   ozone->footer_labels.reset_to_default.x      = (ozone->footer_labels.reset_to_default.show)
+         ? ozone->footer_labels.combo_left.x - ozone->footer_labels.reset_to_default.width - icon_spacer
+         : ozone->footer_labels.combo_left.x;
 
    ozone->footer_labels.help.x                  = (ozone->footer_labels.help.show)
          ? ozone->footer_labels.reset_to_default.x - ozone->footer_labels.help.width - icon_spacer
@@ -12076,6 +12294,37 @@ static void ozone_draw_footer(
                   1.0f,
                   col,
                   mymat);
+
+         /* > A combination's row: Right and Left */
+         if (ozone->footer_labels.combo_right.show)
+         {
+            ozone_draw_icon(
+                  p_disp,
+                  userdata,
+                  video_dims,
+                  icon_size,
+                  icon_size,
+                  icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_DPAD_R],
+                  ozone->footer_labels.combo_right.x,
+                  icon_y,
+                  0.0f,
+                  1.0f,
+                  col,
+                  mymat);
+            ozone_draw_icon(
+                  p_disp,
+                  userdata,
+                  video_dims,
+                  icon_size,
+                  icon_size,
+                  icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_INPUT_DPAD_L],
+                  ozone->footer_labels.combo_left.x,
+                  icon_y,
+                  0.0f,
+                  1.0f,
+                  col,
+                  mymat);
+         }
 
          /* > Reset to default */
          if (ozone->footer_labels.reset_to_default.show)
@@ -12281,6 +12530,35 @@ static void ozone_draw_footer(
             1.0f,
             false);
 
+   /* > A combination's row: Right and Left */
+   if (ozone->footer_labels.combo_right.show)
+   {
+      gfx_display_draw_text(
+            ozone->fonts.footer.font,
+            ozone->footer_labels.combo_right.str,
+            ozone->footer_labels.combo_right.x + icon_size + icon_padding_small,
+            footer_text_y,
+            video_dims,
+            ozone->theme->text_rgba,
+            TEXT_ALIGN_LEFT,
+            1.0f,
+            false,
+            1.0f,
+            false);
+      gfx_display_draw_text(
+            ozone->fonts.footer.font,
+            ozone->footer_labels.combo_left.str,
+            ozone->footer_labels.combo_left.x + icon_size + icon_padding_small,
+            footer_text_y,
+            video_dims,
+            ozone->theme->text_rgba,
+            TEXT_ALIGN_LEFT,
+            1.0f,
+            false,
+            1.0f,
+            false);
+   }
+
    /* > Reset to default */
    if (ozone->footer_labels.reset_to_default.show)
       gfx_display_draw_text(
@@ -12449,7 +12727,7 @@ static void ozone_draw_footer(
                   video_dims,
                   69 * scale_factor,
                   30 * scale_factor,
-                  ozone->theme->textures[OZONE_THEME_TEXTURE_SWITCH],
+                  GFX_SURFACE_HANDLE(ozone->theme->textures[OZONE_THEME_TEXTURE_SWITCH]),
                   footer_margin,
                   video_height - ozone->dimensions.footer_height / 2 - 15 * scale_factor,
                   0.0f,
@@ -12469,7 +12747,11 @@ static void ozone_selection_changed(ozone_handle_t *ozone, bool allow_animation)
    menu_list_t *menu_list     = menu_st->entries.list;
    file_list_t *selection_buf = MENU_LIST_GET_SELECTION(menu_list, 0);
    size_t new_selection       = menu_st->selection_ptr;
-   ozone_node_t *node         = (ozone_node_t*)selection_buf->list[new_selection].userdata;
+   /* selection_ptr can exceed the list size: a selection remembered
+    * per tab is restored after the playlist shrank (cf. #18797). */
+   ozone_node_t *node         = (new_selection < selection_buf->size)
+      ? (ozone_node_t*)selection_buf->list[new_selection].userdata
+      : NULL;
    bool menu_show_sublabels   = settings->bools.menu_show_sublabels;
    bool menu_current_sel_only = settings->bools.menu_show_sublabels_current_selection_only;
 
@@ -12646,40 +12928,17 @@ static void ozone_frame(void *data, video_frame_info_t *video_info)
       uintptr_t icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_LAST];
       uintptr_t ozone_tex[OZONE_TEXTURE_LAST];
       uintptr_t tab_tex[OZONE_TAB_TEXTURE_LAST];
-      memcpy(icons_tex, ozone->icons_textures, sizeof(icons_tex));
-      memcpy(ozone_tex, ozone->textures, sizeof(ozone_tex));
-      memcpy(tab_tex,   ozone->tab_textures,   sizeof(tab_tex));
-
-   /* Reset thumbnail bar when starting/closing content */
-   if (((ozone->flags & OZONE_FLAG_LIBRETRO_RUNNING) > 0) != libretro_running)
-   {
-      if (libretro_running)
-         ozone->flags          |=  OZONE_FLAG_LIBRETRO_RUNNING;
-      else
-         ozone->flags          &= ~OZONE_FLAG_LIBRETRO_RUNNING;
-
-      ozone->flags             |=  OZONE_FLAG_NEED_COMPUTE;
-      if (!libretro_running)
-         ozone->selection_old   = ozone->selection;
-
-      if (ozone->flags2 & OZONE_FLAG2_IS_QUICK_MENU)
-      {
-         if (libretro_running)
-            ozone->flags       &= ~(OZONE_FLAG_WANT_THUMBNAIL_BAR
-                               |    OZONE_FLAG_FULLSCREEN_THUMBNAILS_AVAILABLE);
-         else
-            ozone->flags       |=  (OZONE_FLAG_WANT_THUMBNAIL_BAR
-                               |    OZONE_FLAG_FULLSCREEN_THUMBNAILS_AVAILABLE);
-      }
-   }
+      ozone_icons_snapshot(ozone->icons_textures, icons_tex,
+            OZONE_ENTRIES_ICONS_TEXTURE_LAST);
+      ozone_icons_snapshot(ozone->textures, ozone_tex, OZONE_TEXTURE_LAST);
+      ozone_icons_snapshot(ozone->tab_textures, tab_tex, OZONE_TAB_TEXTURE_LAST);
 
    if (ozone->flags & OZONE_FLAG_FIRST_FRAME)
    {
       menu_input_get_pointer_state(&ozone->pointer);
 
-      ozone->cursor_x_old = ozone->pointer.x;
-      ozone->cursor_y_old = ozone->pointer.y;
-      ozone->flags       &= ~OZONE_FLAG_FIRST_FRAME;
+      ozone->cursor_pos_old = ozone->pointer.pos;
+      ozone->flags         &= ~OZONE_FLAG_FIRST_FRAME;
 
       /* If ozone_render() hasn't run yet (which is the case at
        * startup when video_info->menu.startup_page != Main Menu —
@@ -12737,6 +12996,7 @@ static void ozone_frame(void *data, video_frame_info_t *video_info)
       }
 
       ozone_set_color_theme(ozone, color_theme);
+      retro_atomic_store_release_ptr(&ozone->pending_theme, ozone->theme);
       if (ozone->theme->background_libretro_running)
          ozone_set_background_running_opacity(ozone, menu_framebuffer_opacity);
 
@@ -13081,8 +13341,8 @@ static void ozone_frame(void *data, video_frame_info_t *video_info)
                ozone->pure_white,
                ozone->dimensions.cursor_size,
                icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_POINTER],
-               ozone->pointer.x,
-               ozone->pointer.y);
+               VIDEO_POS_X(ozone->pointer.pos),
+               VIDEO_POS_Y(ozone->pointer.pos));
    }
 
    /* Unbind fonts */
@@ -13114,7 +13374,7 @@ static void ozone_get_playlist_index_header_icon(ozone_handle_t *ozone)
    if (     pl_entry
          && (pl_entry->db_name && *pl_entry->db_name)
          && (db_node = RHMAP_GET_STR(ozone->playlist_db_node_map, pl_entry->db_name)))
-      ozone->header_icon = db_node->icon;
+      ozone->header_icon = GFX_SURFACE_HANDLE(db_node->icon);
 }
 
 static void ozone_search_header_icon(ozone_handle_t *ozone,
@@ -13151,7 +13411,13 @@ static void ozone_search_header_icon(ozone_handle_t *ozone,
 #endif
    }
 
-   ozone->header_icon = ozone_entries_icon_get_texture(ozone, ozone->icons_textures, *enum_idx, path, label, type, false);
+   {
+      uintptr_t icons_tex[OZONE_ENTRIES_ICONS_TEXTURE_LAST];
+      ozone_icons_snapshot(ozone->icons_textures, icons_tex,
+            OZONE_ENTRIES_ICONS_TEXTURE_LAST);
+      ozone->header_icon = ozone_entries_icon_get_texture(ozone, icons_tex,
+            *enum_idx, path, label, type, false);
+   }
 }
 
 static void ozone_set_header(ozone_handle_t *ozone)
@@ -13179,11 +13445,18 @@ static void ozone_set_header(ozone_handle_t *ozone)
       }
    }
 
-   /* Header icon */
+   ozone_set_header_icon(ozone, header_icon);
+}
+
+/* The header icon, by the setting @header_icon: a handle borrowed
+ * from a surface, taken again when one retires (see ozone_render) */
+static void ozone_set_header_icon(ozone_handle_t *ozone, uint8_t header_icon)
+{
+   ozone->header_retired = gfx_surface_retired();
    if (header_icon == OZONE_HEADER_ICON_NONE)
       ozone->header_icon = 0;
    else if (header_icon == OZONE_HEADER_ICON_FIXED)
-      ozone->header_icon = ozone->textures[OZONE_TEXTURE_RETROARCH];
+      ozone->header_icon = GFX_SURFACE_HANDLE(ozone->textures[OZONE_TEXTURE_RETROARCH]);
    else if (header_icon == OZONE_HEADER_ICON_DYNAMIC)
    {
       unsigned type                = FILE_TYPE_NONE;
@@ -13237,8 +13510,8 @@ static void ozone_set_header(ozone_handle_t *ozone)
                         &ozone->horizontal_list, offset)
                   : NULL;
 
-            if (node && node->icon)
-               ozone->header_icon = node->icon;
+            if (node && GFX_SURFACE_HANDLE(node->icon))
+               ozone->header_icon = GFX_SURFACE_HANDLE(node->icon);
          }
          else if (ozone->depth <= max_depth)
             ozone_search_header_icon(ozone, &enum_idx, path, label, type);
@@ -13249,7 +13522,7 @@ static void ozone_set_header(ozone_handle_t *ozone)
          if (ozone->categories_selection_ptr <= ozone->system_tab_end)
          {
             size_t tab_texture = ozone->tabs[ozone->categories_selection_ptr];
-            ozone->header_icon = ozone->tab_textures[tab_texture];
+            ozone->header_icon = GFX_SURFACE_HANDLE(ozone->tab_textures[tab_texture]);
 
             if (label && !strcmp(label,
                      MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS_STR))
@@ -13266,8 +13539,8 @@ static void ozone_set_header(ozone_handle_t *ozone)
             ozone_node_t *node = (ozone_node_t*)
                   ozone->horizontal_list.list[ozone->categories_selection_ptr - ozone->system_tab_end - 1].userdata;
 
-            if (node && node->icon)
-               ozone->header_icon = node->icon;
+            if (node && GFX_SURFACE_HANDLE(node->icon))
+               ozone->header_icon = GFX_SURFACE_HANDLE(node->icon);
 
             if (     string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_EXPLORE_TAB_STR))
@@ -13278,7 +13551,7 @@ static void ozone_set_header(ozone_handle_t *ozone)
       }
 
       if (!ozone->header_icon)
-         ozone->header_icon = ozone->textures[OZONE_TEXTURE_RETROARCH];
+         ozone->header_icon = GFX_SURFACE_HANDLE(ozone->textures[OZONE_TEXTURE_RETROARCH]);
    }
 }
 
@@ -13404,8 +13677,6 @@ static void ozone_populate_entries(
    struct menu_state *menu_st           = menu_state_get_ptr();
    menu_list_t *menu_list               = menu_st->entries.list;
    bool ozone_collapse_sidebar          = settings->bools.ozone_collapse_sidebar;
-   bool menu_show_sublabels             = settings->bools.menu_show_sublabels;
-   bool menu_current_sel_only           = settings->bools.menu_show_sublabels_current_selection_only;
    ozone_handle_t *ozone                = (ozone_handle_t*) data;
 
    if (!ozone)
@@ -13489,8 +13760,6 @@ static void ozone_populate_entries(
                                  && new_depth > ozone->depth;
 
    animate                     = new_depth != ozone->depth;
-   if (!animate && menu_show_sublabels && menu_current_sel_only)
-      ozone->selection_old     = ozone->selection;
 
    if (new_depth <= ozone->depth)
       ozone->flags            |=  OZONE_FLAG_FADE_DIRECTION;
@@ -13959,6 +14228,10 @@ static int ozone_tap_footer(
       return ozone_menu_entry_action(ozone, entry, selection, MENU_ACTION_SCAN);
    else if (ozone->footer_labels.scan.show && x > ozone->footer_labels.scan.x)
       return ozone_menu_entry_action(ozone, entry, selection, MENU_ACTION_SCAN);
+   else if (ozone->footer_labels.combo_right.show && x > ozone->footer_labels.combo_right.x)
+      return ozone_menu_entry_action(ozone, entry, selection, MENU_ACTION_RIGHT);
+   else if (ozone->footer_labels.combo_left.show && x > ozone->footer_labels.combo_left.x)
+      return ozone_menu_entry_action(ozone, entry, selection, MENU_ACTION_LEFT);
    else if (ozone->footer_labels.reset_to_default.show && x > ozone->footer_labels.reset_to_default.x)
       return ozone_menu_entry_action(ozone, entry, selection, MENU_ACTION_START);
    else if (ozone->footer_labels.help.show && x > ozone->footer_labels.help.x)

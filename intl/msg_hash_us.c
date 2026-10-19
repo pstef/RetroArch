@@ -352,6 +352,8 @@ int msg_hash_get_help_us_enum(enum msg_hash_enums msg, char *s, size_t len)
                    strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_AL), len);
                 else if (string_is_equal(lbl, msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DRIVER_SL)))
                    strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_SL), len);
+                else if (string_is_equal(lbl, msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DRIVER_AAUDIO)))
+                   strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_AAUDIO), len);
                 else if (string_is_equal(lbl, msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DRIVER_DSOUND)))
                    strlcpy(s, msg_hash_to_str(MENU_ENUM_LABEL_HELP_AUDIO_DRIVER_DSOUND), len);
                 else if (string_is_equal(lbl, msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DRIVER_WASAPI)))
@@ -649,6 +651,8 @@ static const char *const msg_hash_us_lbl_strs[] = {
 #include "../settings/settings_def_ozone_sidebar.h"
 #include "../settings/settings_def_input_bind_timeouts.h"
 #include "../settings/settings_def_video_hdr_toggles.h"
+#include "../settings/settings_def_video_stereo.h"
+#include "../settings/settings_def_video_headset.h"
 #include "../settings/settings_def_rewind.h"
 #include "../settings/settings_def_playlist_history.h"
 #include "../settings/settings_def_menu_scroll.h"
@@ -750,6 +754,7 @@ static const char *const msg_hash_us_lbl_strs[] = {
 #include "../settings/settings_def_updater_extract.h"
 #include "../settings/settings_def_gamemode.h"
 #include "../settings/settings_def_sustained_performance.h"
+#include "../settings/settings_def_power_plan.h"
 #include "../settings/settings_def_quick_menu_shaders_view.h"
 #include "../settings/settings_def_menu_online_updater_view.h"
 #include "../settings/settings_def_settings_show_smb.h"
@@ -1028,6 +1033,8 @@ static const uint32_t msg_hash_us_lbl_ids[] = {
 #include "../settings/settings_def_ozone_sidebar.h"
 #include "../settings/settings_def_input_bind_timeouts.h"
 #include "../settings/settings_def_video_hdr_toggles.h"
+#include "../settings/settings_def_video_stereo.h"
+#include "../settings/settings_def_video_headset.h"
 #include "../settings/settings_def_rewind.h"
 #include "../settings/settings_def_playlist_history.h"
 #include "../settings/settings_def_menu_scroll.h"
@@ -1129,6 +1136,7 @@ static const uint32_t msg_hash_us_lbl_ids[] = {
 #include "../settings/settings_def_updater_extract.h"
 #include "../settings/settings_def_gamemode.h"
 #include "../settings/settings_def_sustained_performance.h"
+#include "../settings/settings_def_power_plan.h"
 #include "../settings/settings_def_quick_menu_shaders_view.h"
 #include "../settings/settings_def_menu_online_updater_view.h"
 #include "../settings/settings_def_settings_show_smb.h"

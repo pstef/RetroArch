@@ -84,13 +84,21 @@ bool video_driver_texture_unload(uintptr_t *id)
 
 bool video_driver_texture_can_update(void) { return true; }
 
-bool video_driver_texture_update(uintptr_t id, void *data)
+unsigned stub_drop_updates;
+
+enum video_texture_update video_driver_texture_update(uintptr_t id,
+      void *data)
 {
    const struct texture_image *img = (const struct texture_image*)data;
    if (!id || id > STUB_MAX_TEXTURES || !stub_tex[id - 1].live)
-      return false;
+      return VIDEO_TEXTURE_UPDATE_REFUSED;
+   if (stub_drop_updates)
+   {
+      stub_drop_updates--;
+      return VIDEO_TEXTURE_UPDATE_DROPPED;
+   }
    stub_tex[id - 1].checksum = stub_checksum(img);
-   return true;
+   return VIDEO_TEXTURE_UPDATE_DONE;
 }
 
 uint32_t video_driver_get_disp_flags(void) { return 0; }
@@ -105,6 +113,15 @@ bool video_driver_supports_texture_format(enum texture_gpu_format fmt)
 {
    (void)fmt;
    return false;
+}
+
+/* As the frontend fits an image, from this stub's own answers */
+bool video_driver_texture_fit(struct texture_image *ti)
+{
+   if (ti->pix10 && !video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGB10A2))
+      image_texture_narrow_10bit(ti);
+   return !ti->fp16
+      || video_driver_supports_texture_format(TEXTURE_GPU_FORMAT_RGBA16F);
 }
 
 enum texture_filter_type gfx_display_texture_filter(void)
@@ -146,8 +163,14 @@ unsigned stub_video_thread_run(void)
          video_driver_texture_load(n->img, n->filter, &id);
          n->handle    = id;
       }
-      else if (!video_driver_texture_update(n->handle, n->img))
-         n->handle    = 0;
+      else
+      {
+         enum video_texture_update r = video_driver_texture_update(
+               n->handle, n->img);
+         n->dropped   = (r == VIDEO_TEXTURE_UPDATE_DROPPED);
+         if (r == VIDEO_TEXTURE_UPDATE_REFUSED)
+            n->handle = 0;
+      }
       STUB_NEXT(n) = NULL;
       if (stub_out_tail)
          STUB_NEXT(stub_out_tail) = n;
@@ -160,12 +183,13 @@ unsigned stub_video_thread_run(void)
    return ran;
 }
 
+bool task_is_on_main_thread(void) { return true; }
+
 bool video_thread_async_post(video_thread_async_load_t *n)
 {
    if (!stub_thread_active || !n)
       return false;
    STUB_NEXT(n)    = NULL;
-   n->caller_owned = 1;
    if (stub_in_tail)
       STUB_NEXT(stub_in_tail) = n;
    else
@@ -189,3 +213,37 @@ void video_thread_async_poll(void)
    }
 }
 #endif
+
+/* No driver lends upload memory here: every slot stays the surface's. */
+void *video_driver_texture_lend(uintptr_t id, unsigned slot, size_t pitch, size_t *out_pitch)
+{
+   if (out_pitch)
+      *out_pitch = pitch;
+   (void)id; (void)slot; (void)pitch;
+   return NULL;
+}
+
+/* No device to import into */
+enum video_texture_update video_driver_texture_import(uintptr_t *id,
+      const video_frame_import_t *frame, enum texture_filter_type filter)
+{
+   (void)id; (void)frame; (void)filter;
+   return VIDEO_TEXTURE_UPDATE_REFUSED;
+}
+
+bool video_driver_texture_lend_ready(uintptr_t id, unsigned slot)
+{
+   (void)id; (void)slot;
+   return true;
+}
+
+bool video_driver_texture_lend_needs_refresh(void) { return false; }
+bool video_thread_lend_get(int idx, void **mem, size_t *pitch)
+{
+   (void)idx;
+   (void)mem;
+   (void)pitch;
+   return false;
+}
+
+bool video_thread_lend_ready(int idx) { (void)idx; return true; }

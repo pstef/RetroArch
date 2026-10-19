@@ -120,6 +120,7 @@ typedef char win32_dwm_timing_info_size_check[
 
 #include "win32_common.h"
 #include "win32_msg_route.h"
+#include "win32_ime.h"
 
 
 #ifdef HAVE_GDI
@@ -210,6 +211,11 @@ static const char *win32_kept_tag;
 static bool        win32_wnd_taken;
 #if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x501
 static HDEVNOTIFY win32_kept_notification;
+#endif
+
+#ifdef HAVE_WIN32INPUT
+/* input/drivers/win32_input.c */
+extern void win32_input_key_message(unsigned scancode, bool down);
 #endif
 
 #ifdef HAVE_DINPUT
@@ -604,7 +610,6 @@ void win32_get_video_size(void *data,
 static void win32_resize_after_display_change(HWND hwnd, HMONITOR monitor)
 {
    MONITORINFO info;
-   memset(&info, 0, sizeof(info));
    info.cbSize = sizeof(info);
    if (GetMonitorInfo(monitor, &info))
       SetWindowPos(hwnd, 0, 0, 0,
@@ -997,10 +1002,6 @@ static LRESULT CALLBACK wnd_proc_common(
       case WM_CLOSE:
       case WM_DESTROY:
       case WM_QUIT:
-         /* a window that was left up for a driver that did not take
-          * it, being taken down */
-         if (hwnd && hwnd == win32_retiring_hwnd)
-            break;
 #if !defined(_XBOX)
          win32_sizemove_abort();
 #endif
@@ -1387,6 +1388,12 @@ static LRESULT win32_wnd_proc_route(HWND hwnd,
          if (extended)
             keysym |= 0x80;
 
+#ifdef HAVE_WIN32INPUT
+         /* the plain Win32 input driver has the keys that are down
+          * from here and nowhere else */
+         win32_input_key_message(keysym, keydown);
+#endif
+
          /* tell the driver about shift and alt key events */
          if (     (route & WIN32_ROUTE_KEY_MODS)
                && (     keysym == 0x2A/*DIK_LSHIFT*/
@@ -1414,6 +1421,22 @@ static LRESULT win32_wnd_proc_route(HWND hwnd,
             || wparam == VK_RSHIFT)
          return 0;
    }
+
+   /* The focus lost by a window that is no longer the main window.
+    *
+    * The input driver keeps one focus for the process, and the mouse
+    * is clipped for the process: both go by the main window. Threaded
+    * video turned on or off moves the window to another thread: the
+    * new window is another thread's, and the old one is told it lost
+    * the focus through its own thread's queue, which that thread gets
+    * to after the new window is up - the loss would then clear the
+    * driver's focus and the keyboard would be dead until the next
+    * Alt-Tab. That is not the process losing the focus, and it is not
+    * passed on. If the focus does leave, the main window is told so
+    * itself. */
+   if (     message == WM_KILLFOCUS
+         && main_window.hwnd && hwnd != main_window.hwnd)
+      route &= ~(WIN32_ROUTE_INPUT | WIN32_ROUTE_CLIP_ON | WIN32_ROUTE_CLIP_OFF);
 
 #ifdef HAVE_CLIP_WINDOW
    if (     (route & (WIN32_ROUTE_CLIP_ON | WIN32_ROUTE_CLIP_OFF))
@@ -1600,11 +1623,35 @@ static void wnd_proc_gdi_paint(gdi_t *gdi)
  * A video family differs from another in what creating the window
  * sets up - a GL context, a Vulkan surface, a device context - and GDI
  * also paints from here. Everything else is win32_wnd_proc_route(). */
+/* A line of text has been opened, or closed. From the frontend's
+ * thread; the window's own thread does the work. */
+void win32_text_entry(bool active)
+{
+   if (win32_ime_set(active))
+      win32_ime_post(main_window.hwnd);
+}
+
 LRESULT CALLBACK win32_window_proc(HWND hwnd, UINT message,
       WPARAM wparam, LPARAM lparam)
 {
+   /* A window left up for a driver that did not take it, being taken
+    * down: the main window's state, the input driver and the video
+    * driver are the next driver's, and what the desktop sends a
+    * window on its way out (its size, position, activation and focus)
+    * is none of theirs. */
+   if (hwnd == win32_retiring_hwnd)
+      return DefWindowProc(hwnd, message, wparam, lparam);
+
+   if (message == WIN32_WM_TEXT_ENTRY)
+   {
+      win32_ime_sync(hwnd);
+      return 0;
+   }
+
    if (message == WM_CREATE)
    {
+      win32_ime_sync(hwnd);
+
       switch (win32_wnd_family)
       {
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE)
@@ -1703,6 +1750,10 @@ void win32_window_proc_setup(enum win32_window_family family)
  * it now (win32_window_pixel_format_fits()); otherwise it goes and a
  * new one is made.
  *
+ * An OpenGL or Vulkan window also carries the way it is presented on,
+ * native or through DXGI, as its tag (win32_window_tag_presentation()):
+ * a window is not taken by a driver presenting the other way.
+ *
  * And for a Direct3D driver that has given its window a tag
  * (win32_window_tag()), which says two things: that it frees
  * everything it had on the window before it leaves it, and that it
@@ -1723,6 +1774,19 @@ static bool win32_window_pixel_format_fits(HWND hwnd);
 void win32_window_tag(const char *tag)
 {
    win32_wnd_tag = tag;
+}
+
+/* An OpenGL or Vulkan window that has carried a DXGI flip-model swap
+ * chain does not go back to the driver's own presentation, and one
+ * presented natively does not take a swap chain reliably either: the
+ * presentation path is part of what the window is. A driver of either
+ * family says which one it will use, and a kept window is taken only
+ * by a driver using the same one; changing the setting, or an
+ * override that changes it for one core, gets a new window. */
+void win32_window_tag_presentation(bool dxgi)
+{
+   static const char tag_dxgi[] = "dxgi";
+   win32_wnd_tag = dxgi ? tag_dxgi : NULL;
 }
 
 bool win32_window_was_taken(void)
@@ -1956,6 +2020,15 @@ static bool win32_window_create(void *data, unsigned style,
       win32_wnd_taken = true;
       free(title_local);
 
+      /* A window minimised has no client area, and the driver makes
+       * its surface for the one it finds below (a Vulkan swapchain is
+       * refused at 0x0): it is put back up first, as a new window
+       * would be shown, and before it is restyled - a style without
+       * WS_MINIMIZE on a window still minimised leaves the two out of
+       * step. */
+      if (IsIconic(hwnd))
+         ShowWindow(hwnd, SW_RESTORE);
+
       /* win32_set_window() gives a windowed window its menu again:
        * the same one, which is kept in the meantime */
       if (menu)
@@ -2014,10 +2087,11 @@ static bool win32_window_create(void *data, unsigned style,
    g_win32->taskbar_message            =
       RegisterWindowMessage("TaskbarButtonCreated");
 
-   memset(&notification_filter, 0, sizeof(notification_filter));
    notification_filter.dbcc_size       = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
    notification_filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
    notification_filter.dbcc_classguid  = GUID_DEVINTERFACE_HID;
+   notification_filter.dbcc_reserved   = 0;
+   notification_filter.dbcc_name[0]    = 0;
    /* a window taken back is still registered */
    if (!reused)
       notification_handler             = RegisterDeviceNotification(
@@ -2139,7 +2213,6 @@ retro_time_t win32_dwm_last_vblank_time(void)
    if (!get_timing)
       return 0;
 
-   memset(&info, 0, sizeof(info));
    info.cbSize = sizeof(info);
    if (FAILED(get_timing(NULL, &info)))
       return 0;
@@ -2211,83 +2284,85 @@ HWND win32_get_window(void) { return main_window.hwnd; }
 
 bool win32_suspend_screensaver(void *data, bool enable)
 {
-   if (enable)
+   /* REASON_CONTEXT, spelled out for SDKs that predate it. */
+   typedef struct
    {
-      char tmp[PATH_MAX_LENGTH];
-      int major                             = 0;
-      int minor                             = 0;
-      const frontend_ctx_driver_t *frontend = frontend_get_ptr();
-
-      if (!frontend)
-         return false;
-
-      if (frontend->get_os)
-         frontend->get_os(tmp, sizeof(tmp), &major, &minor);
-
-      if (major * 100 + minor >= 601)
+      ULONG Version;
+      DWORD Flags;
+      union
       {
-#if _WIN32_WINNT >= 0x0601
-         /* Windows 7, 8, 10 codepath */
-         typedef HANDLE(WINAPI * PowerCreateRequestPtr)(REASON_CONTEXT *context);
-         typedef BOOL(WINAPI * PowerSetRequestPtr)(HANDLE PowerRequest,
-            POWER_REQUEST_TYPE RequestType);
-         PowerCreateRequestPtr powerCreateRequest;
-         PowerSetRequestPtr    powerSetRequest;
-         HMODULE kernel32 = GetModuleHandle("kernel32.dll");
-
-         if (kernel32)
+         struct
          {
-            powerCreateRequest =
-               (PowerCreateRequestPtr)GetProcAddress(
-                     kernel32, "PowerCreateRequest");
-            powerSetRequest =
-               (PowerSetRequestPtr)GetProcAddress(
-                     kernel32, "PowerSetRequest");
+            HMODULE LocalizedReasonModule;
+            ULONG LocalizedReasonId;
+            ULONG ReasonStringCount;
+            LPWSTR *ReasonStrings;
+         } Detailed;
+         LPWSTR SimpleReasonString;
+      } Reason;
+   } win32_reason_context_t;
+   typedef HANDLE (WINAPI *PowerCreateRequest_t)(win32_reason_context_t*);
+   typedef BOOL   (WINAPI *PowerRequest_t)(HANDLE, int);
+   typedef DWORD  (WINAPI *SetThreadExecutionState_t)(DWORD);
+   /* One request for the process. Windows counts every
+    * PowerSetRequest, so it is set only when it is not already. Calls
+    * never overlap: they come from the thread that owns the video
+    * driver. */
+   static HANDLE request               = NULL;
+   static PowerRequest_t set_request   = NULL;
+   static PowerRequest_t clear_request = NULL;
+   static bool request_set             = false;
+   static bool request_probed          = false;
+   SetThreadExecutionState_t set_state;
+   HMODULE kernel32                    = GetModuleHandleA("kernel32.dll");
 
-            if (powerCreateRequest && powerSetRequest)
-            {
-               POWER_REQUEST_CONTEXT RequestContext;
-               HANDLE Request;
+   if (!kernel32)
+      return false;
 
-               RequestContext.Version                   =
-                  POWER_REQUEST_CONTEXT_VERSION;
-               RequestContext.Flags                     =
-                  POWER_REQUEST_CONTEXT_SIMPLE_STRING;
-               RequestContext.Reason.SimpleReasonString = (LPWSTR)
-                  L"RetroArch running";
+   /* Windows 7 and later */
+   if (!request_probed)
+   {
+      PowerCreateRequest_t create = (PowerCreateRequest_t)
+         GetProcAddress(kernel32, "PowerCreateRequest");
+      set_request    = (PowerRequest_t)
+         GetProcAddress(kernel32, "PowerSetRequest");
+      clear_request  = (PowerRequest_t)
+         GetProcAddress(kernel32, "PowerClearRequest");
+      request_probed = true;
 
-               Request                                  =
-                  powerCreateRequest(&RequestContext);
-
-               powerSetRequest(Request, PowerRequestDisplayRequired);
-               /* TODO/FIXME - handle is never released so
-                * technically counts as a memory leak. However, this
-                * handle needs to be kept alive so long as the screensaver
-                * should be suppressed. So this variable might need to
-                * be bookkept somewhere else where it can be properly
-                * closed upon shutdown */
-               return true;
-            }
-         }
-#endif
-      }
-      else if (major * 100 + minor >= 410)
+      if (create && set_request && clear_request)
       {
-#if _WIN32_WINDOWS >= 0x0410 || _WIN32_WINNT >= 0x0410
-         /* 98 / 2K / XP / Vista codepath */
-         SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
-         return true;
-#endif
-      }
-      else
-      {
-         /* 95 / NT codepath */
-         /* No way to block the screensaver. */
-         return true;
+         win32_reason_context_t ctx;
+         ctx.Version                   = 0; /* POWER_REQUEST_CONTEXT_VERSION */
+         ctx.Flags                     = 0x1; /* ..._SIMPLE_STRING */
+         ctx.Reason.SimpleReasonString = (LPWSTR)L"RetroArch running";
+         request                       = create(&ctx);
+         if (request == INVALID_HANDLE_VALUE)
+            request = NULL;
       }
    }
 
-   return false;
+   /* PowerRequestDisplayRequired */
+   if (request)
+   {
+      if (enable == request_set)
+         return true;
+      if (!(enable
+               ? set_request(request, 0)
+               : clear_request(request, 0)))
+         return false;
+      request_set = enable;
+      return true;
+   }
+
+   /* 98 / 2000 / XP / Vista: continuous state for the calling thread,
+    * ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED. */
+   if ((set_state = (SetThreadExecutionState_t)
+            GetProcAddress(kernel32, "SetThreadExecutionState")))
+      return set_state(enable ? 0x80000003 : 0x80000000) != 0;
+
+   /* 95 / NT 4 have no way to hold the screensaver off. */
+   return true;
 }
 
 static bool win32_monitor_set_fullscreen(
@@ -2312,11 +2387,12 @@ static bool win32_monitor_set_fullscreen(
          CDS_FULLSCREEN) == DISP_CHANGE_SUCCESSFUL;
 }
 
-void win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
+bool win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
    unsigned *width, unsigned *height, bool fullscreen, bool windowed_full,
    RECT *rect, RECT *mon_rect, DWORD *style)
 {
    settings_t *settings             = config_get_ptr();
+   bool mode_set                    = true;
 
    if (fullscreen)
    {
@@ -2350,8 +2426,9 @@ void win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
       {
          *style          = WS_POPUP | WS_VISIBLE;
 
-         if (win32_monitor_set_fullscreen(*width, *height,
-               (int)refresh_rate, false, current_mon->szDevice))
+         mode_set = win32_monitor_set_fullscreen(*width, *height,
+               (int)refresh_rate, false, current_mon->szDevice);
+         if (mode_set)
          {
             RARCH_LOG("[Video] Fullscreen set to %ux%u @ %uHz on device %s.\n",
                   *width, *height, (int)refresh_rate, current_mon->szDevice);
@@ -2415,6 +2492,7 @@ void win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
          g_win32_resize_height = *height  = rect->bottom - rect->top;
       }
    }
+   return mode_set;
 }
 
 void win32_set_window(unsigned *width, unsigned *height,
@@ -2490,6 +2568,30 @@ static void win32_window_tell_client_size(HWND hwnd)
       g_win32_resize_height = client.bottom - client.top;
       g_win32_flags        |= WIN32_CMN_FLAG_RESIZED;
    }
+}
+
+/* The size the window's client area really is, packed as the drivers
+ * keep sizes; @dims if there is no window to ask.
+ *
+ * It is not always the size that was asked for: Windows does not let
+ * a window grow past the screen, and a menu bar takes its share. A
+ * swap chain made the size asked for is then stretched over the
+ * window until the first resize notice has been acted on, a frame or
+ * two later - and with a window kept across a restart those frames
+ * are on screen. A driver that makes its swap chain this size has
+ * nothing to put right. */
+unsigned win32_window_client_dims(unsigned dims)
+{
+   RECT client;
+   HWND hwnd = main_window.hwnd;
+   if (     hwnd
+         && GetClientRect(hwnd, &client)
+         && client.right  > client.left
+         && client.bottom > client.top)
+      return VIDEO_SCALE_PACK(
+            (unsigned)(client.right  - client.left),
+            (unsigned)(client.bottom - client.top));
+   return dims;
 }
 
 bool win32_set_video_mode(void *data,
@@ -2601,23 +2703,9 @@ bool win32_fullscreen_in_place(void)
    return in_place != 0;
 }
 
-/* Takes the window that is already there between windowed and
- * borderless fullscreen: its style, position and size change, and it
- * stays the same window.
- *
- * A fullscreen toggle used to mean a full driver restart - window,
- * video device, shaders, audio, input drivers, controllers detected
- * again - because the only way to a window of the other kind was to
- * destroy this one and create another. For a borderless fullscreen
- * window nothing but the window differs. The size it ends up with
- * reaches the video driver as any resize does, through WM_SIZE.
- *
- * Not for exclusive fullscreen, which changes the display mode: that
- * answers false and is left to the restart.
- *
- * Has to run on the thread that owns the window; a video driver's
- * set_video_mode does. */
-bool win32_window_set_fullscreen(unsigned dims, bool fullscreen)
+/* Restyle on the window thread. Exclusive callers handle GPU ownership. */
+static bool win32_window_change_fullscreen(unsigned dims, bool fullscreen,
+      bool allow_exclusive)
 {
    DWORD style;
    RECT mon_rect;
@@ -2631,12 +2719,19 @@ bool win32_window_set_fullscreen(unsigned dims, bool fullscreen)
    HWND hwnd            = main_window.hwnd;
    settings_t *settings = config_get_ptr();
    win32_common_state_t *g_win32 = (win32_common_state_t*)&win32_st;
+   bool windowed_full   = settings->bools.video_windowed_fullscreen;
    /* where the window stood before it last went fullscreen */
    static RECT windowed_rect;
    static HWND windowed_rect_of;
 
-   if (!hwnd || !settings->bools.video_windowed_fullscreen)
+   if (!hwnd || (!windowed_full && !allow_exclusive))
       return false;
+
+   if (!fullscreen && (g_win32_flags & WIN32_CMN_FLAG_RESTORE_DESKTOP))
+   {
+      win32_monitor_get_info();
+      g_win32_flags &= ~WIN32_CMN_FLAG_RESTORE_DESKTOP;
+   }
 
    /* fullscreen on the monitor the window is on, as a restart has it */
    win32_monitor_last = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -2654,8 +2749,23 @@ bool win32_window_set_fullscreen(unsigned dims, bool fullscreen)
       windowed_rect_of = hwnd;
    }
 
-   win32_set_style(&current_mon, &hm_to_use, &width, &height,
-         fullscreen, true, &rect, &mon_rect, &style);
+   /* A fullscreen size of 0x0 means the monitor's own: the display
+    * mode asked for and the window put over it are the monitor's
+    * current size, as a driver starting up resolves it. */
+   if (fullscreen && (!width || !height))
+   {
+      width  = mon_rect.right  - mon_rect.left;
+      height = mon_rect.bottom - mon_rect.top;
+   }
+
+   if (!win32_set_style(&current_mon, &hm_to_use, &width, &height,
+            fullscreen, windowed_full, &rect, &mon_rect, &style))
+      return false;
+   if (fullscreen && !windowed_full)
+   {
+      win32_monitor_last = hm_to_use;
+      g_win32_flags |= WIN32_CMN_FLAG_RESTORE_DESKTOP;
+   }
 
    if (fullscreen)
    {
@@ -2689,13 +2799,23 @@ bool win32_window_set_fullscreen(unsigned dims, bool fullscreen)
    SetWindowPos(hwnd, HWND_TOP, x, y, width, height,
          SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
 
-   win32_set_window(&width, &height, fullscreen, true, &rect);
+   win32_set_window(&width, &height, fullscreen, windowed_full, &rect);
 
    /* what the video driver is told is the size the window has now */
    win32_window_tell_client_size(hwnd);
 
    return true;
 }
+bool win32_window_set_fullscreen(unsigned dims, bool fullscreen)
+{
+   return win32_window_change_fullscreen(dims, fullscreen, false);
+}
+
+bool win32_window_set_fullscreen_exclusive(unsigned dims, bool fullscreen)
+{
+   return win32_window_change_fullscreen(dims, fullscreen, true);
+}
+
 #endif
 
 bool win32_get_client_rect(RECT* rect)
@@ -2848,12 +2968,18 @@ static int win32_try_scrgb_pixel_format(HDC target_hdc)
    int          result    = 0;
    static const char *probe_class = "RetroArch-WGL-Probe";
 
-   memset(&wc, 0, sizeof(wc));
    wc.cbSize        = sizeof(wc);
    wc.style         = CS_OWNDC;
    wc.lpfnWndProc   = DefWindowProcA;
    wc.hInstance     = GetModuleHandle(NULL);
    wc.lpszClassName = probe_class;
+   wc.cbClsExtra    = 0;
+   wc.cbWndExtra    = 0;
+   wc.hIcon         = NULL;
+   wc.hCursor       = NULL;
+   wc.hbrBackground = NULL;
+   wc.lpszMenuName  = NULL;
+   wc.hIconSm       = NULL;
 
    if (!RegisterClassExA(&wc))
       return 0;

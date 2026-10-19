@@ -35,8 +35,13 @@
 #include <string.h>
 #include <windows.h>
 
+#include <rthreads/retro_eventcount.h>
+static bool test_wait_timeout(retro_eventcount_t *ec, int key, int64_t usec);
+#define retro_eventcount_commit_wait_timeout test_wait_timeout
+
 /* The driver whole, as wdmks_abi_check.c includes it. */
 #include "audio/drivers/wdmks.c"
+#undef retro_eventcount_commit_wait_timeout
 
 /* What the driver reaches for in RetroArch. */
 void RARCH_LOG(const char *f, ...)  { (void)f; }
@@ -119,6 +124,62 @@ static void loop_teardown(wdmks_t *w)
    retro_eventcount_free(&w->rt_park);
    retro_spsc_free(&w->rt_ring);
    free(w->rt_buf);
+}
+
+static wdmks_t *wait_model;
+static int64_t wait_elapsed;
+
+static bool test_wait_timeout(retro_eventcount_t *ec, int key, int64_t usec)
+{
+   if (wait_model)
+   {
+      unsigned char drained[RATE / 200 * FRAME];
+      retro_eventcount_cancel_wait(ec);
+      wait_elapsed += usec;
+      /* A healthy 64 ms pin cannot free room before its notification. */
+      if (wait_elapsed >= 64000)
+      {
+         retro_spsc_read(&wait_model->rt_ring, drained, sizeof(drained));
+         return true;
+      }
+      return false;
+   }
+   return retro_eventcount_commit_wait_timeout(ec, key, usec);
+}
+
+static void run_fragment_wait(void)
+{
+   wdmks_t w;
+   unsigned char tone[RATE / 200 * FRAME];
+   unsigned mode;
+   printf("-- 5 ms write waiting on a 64 ms fragment --\n");
+   memset(tone, 0, sizeof(tone));
+   for (mode = 0; mode < 2; mode++)
+   {
+      loop_setup(&w);
+      w.rt_ahead = RATE * 64 / 1000 * FRAME;
+      w.rt_thread = (sthread_t*)(uintptr_t)1;
+      w.nonblock = false;
+      while (wdmks_rt_ring_room(&w))
+      {
+         size_t n = wdmks_rt_ring_room(&w);
+         if (n > sizeof(tone))
+            n = sizeof(tone);
+         retro_spsc_write(&w.rt_ring, tone, n);
+      }
+      retro_atomic_store_release_int(&w.rt_run, 1);
+      wait_model = &w;
+      wait_elapsed = 0;
+      if (mode == 0)
+         check(wdmks_wait_writable(&w, sizeof(tone)) >= sizeof(tone),
+               "writable wait survives a normal fragment");
+      else
+         check(wdmks_write(&w, tone, sizeof(tone)) == sizeof(tone),
+               "blocking write survives a normal fragment");
+      wait_model = NULL;
+      w.rt_thread = NULL;
+      loop_teardown(&w);
+   }
 }
 
 /* A byte pattern no silence matches: every byte non-zero. */
@@ -799,8 +860,96 @@ static void run_geometry(unsigned latency_ms, unsigned fifo)
    fifo_frames = 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* The lend pair on a threaded looped pin: the span is the ring's own, */
+/* what is published reaches the loop exactly as write() would put it, */
+/* an integer pin's float is converted in place, and every path that   */
+/* write() must handle itself refuses the lend.                        */
+/* ------------------------------------------------------------------ */
+
+static void run_lend(void)
+{
+   static unsigned char tone[4096];
+   static float         flt[1024];
+   static int32_t       want[1024];
+   wdmks_t w;
+   void   *region = NULL;
+   size_t  got, before;
+
+   printf("-- lend pair --\n");
+   loop_setup(&w);
+   w.rt_thread = (sthread_t*)(uintptr_t)1; /* present, never run */
+
+   fill_tone(tone, sizeof(tone), 7);
+   got = wdmks_write_begin(&w, sizeof(tone), &region);
+   check(region && got == sizeof(tone) && got % FRAME == 0,
+         "the ring lends a frame-aligned span of what was asked");
+   memcpy(region, tone, got);
+   check(wdmks_write_end(&w, got) == (ssize_t)got, "and publishes it");
+   check(retro_spsc_read_avail(&w.rt_ring) == got, "into the ring");
+   wdmks_rt_pump_once(&w);
+   check(find_in_loop(&w, tone, got) < w.rt_size,
+         "the pump moves it into the loop unchanged");
+
+   before = retro_spsc_read_avail(&w.rt_ring);
+   got    = wdmks_write_begin(&w, 64, &region);
+   check(got == 64 && region, "a second lend");
+   check(wdmks_write_end(&w, 0) == 0
+         && retro_spsc_read_avail(&w.rt_ring) == before,
+         "abandoned, it publishes nothing");
+
+   /* An integer pin: float in the lent span, s32 in the ring. */
+   {
+      size_t i;
+      for (i = 0; i < 1024; i++)
+         flt[i] = (float)((int)(i % 200) - 100) / 128.0f;
+      convert_float_to_s32(want, flt, 1024, 24);
+      w.cvt            = (unsigned char*)malloc(16);
+      w.stream.fmt.bits = 24;
+      got = wdmks_write_begin(&w, sizeof(flt), &region);
+      check(got == sizeof(flt), "an integer pin lends too");
+      memcpy(region, flt, got);
+      wdmks_write_end(&w, got);
+      wdmks_rt_pump_once(&w);
+      check(find_in_loop(&w, (const unsigned char*)want, sizeof(want))
+            < w.rt_size, "converted in place to the pin's integers");
+      free(w.cvt);
+      w.cvt = NULL;
+   }
+
+   w.ac3 = (rac3_encoder_t*)(uintptr_t)1;
+   check(!wdmks_write_begin(&w, 64, &region) && !region,
+         "the bit-stream path refuses");
+   w.ac3 = NULL;
+   w.stream.looped = false;
+   check(!wdmks_write_begin(&w, 64, &region), "a packet pin refuses");
+   w.stream.looped = true;
+   w.rt_thread = NULL;
+   check(!wdmks_write_begin(&w, 64, &region),
+         "a loop without its refill thread refuses");
+   w.rt_thread = (sthread_t*)(uintptr_t)1;
+   retro_atomic_int_init(&w.dead, 1);
+   check(!wdmks_write_begin(&w, 64, &region), "a dead pin refuses");
+   retro_atomic_int_init(&w.dead, 0);
+
+   /* Full: nothing to lend, and nothing left reserved. */
+   while (wdmks_rt_ring_room(&w))
+   {
+      size_t n = wdmks_rt_ring_room(&w);
+      if (n > sizeof(tone))
+         n = sizeof(tone);
+      retro_spsc_write(&w.rt_ring, tone, n);
+   }
+   check(!wdmks_write_begin(&w, 64, &region) && !region,
+         "a full ring refuses");
+   w.rt_thread = NULL;
+   loop_teardown(&w);
+}
+
 int main(void)
 {
+   run_fragment_wait();
+   run_lend();
    run_ranges();
    run_wide_pcm_pin();
    run_wide_register();
